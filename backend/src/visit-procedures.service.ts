@@ -111,6 +111,26 @@ export class VisitProceduresService {
     return this.findOne(saved.id)
   }
 
+  async completeMedical(id: string, body?: CompleteVisitProcedureBody) {
+    const procedure = await this.procedures.findOne({ where: { id } })
+    if (!procedure) throw new NotFoundException(`Visit procedure ${id} was not found`)
+
+    const medicalBlockCodes = new Set([
+      'FASTING',
+      'ANTHROPOMETRY',
+      'VITALS',
+      'CONMED_AE',
+      'PHYSICAL_EVAL',
+      'PHQ9',
+      'CSSRS',
+    ])
+    if (!medicalBlockCodes.has(procedure.code)) {
+      throw new ConflictException(`${procedure.code} is not a medical procedure block`)
+    }
+
+    return this.complete(id, body)
+  }
+
   async refreshProcedureReadiness(visitId: string) {
     const visit = await this.visits.findOneBy({ id: visitId })
     if (!visit) throw new NotFoundException(`Visit ${visitId} was not found`)

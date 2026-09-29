@@ -39,4 +39,12 @@ export class VisitProceduresController {
   ) {
     return this.visitProcedures.complete(id, body)
   }
+
+  @Patch('visit-procedures/:id/complete-medical')
+  completeMedical(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() body?: CompleteVisitProcedureBody,
+  ) {
+    return this.visitProcedures.completeMedical(id, body)
+  }
 }
