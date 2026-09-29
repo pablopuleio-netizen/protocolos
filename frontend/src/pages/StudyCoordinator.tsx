@@ -1,19 +1,33 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { API_BASE_URL } from '../config/api'
 
-type Visita = {
-  id: number
-  codigo: string
-  estudio: string
-  visita: string
-  hora: string
-  medico: string
-  consultorio: string
-  estado: 'esperado' | 'presente' | 'en_curso'
-  progreso: number
-  realizados: number
-  total: number
-  puedeAvanzar: string[]
-  pendientes: string[]
+type Participant = {
+  id: string
+  code: string
+  studyCode: string
+}
+
+type VisitStatus = 'SCHEDULED' | 'PRESENT' | 'IN_PROGRESS' | 'NO_SHOW' | 'COMPLETED'
+
+type Visit = {
+  id: string
+  participant: Participant
+  visitCode: string
+  scheduledDate: string
+  scheduledTime: string
+  assignedDoctor: string
+  room: string | null
+  status: VisitStatus
+  arrivalAt: string | null
+  startedAt: string | null
+  completedAt: string | null
+}
+
+type VisitView = {
+  text: string
+  className: string
+  alert?: 'demora' | 'espera'
+  minutes?: number
 }
 
 type StudyCoordinatorProps = {
@@ -31,79 +45,97 @@ type Procedimiento = {
 export default function StudyCoordinator({
   onVolver,
 }: StudyCoordinatorProps) {
-  const [visitaAbierta, setVisitaAbierta] = useState<Visita | null>(null)
+  const [visitas, setVisitas] = useState<Visit[]>([])
+  const [visitaAbierta, setVisitaAbierta] = useState<Visit | null>(null)
+  const [cargando, setCargando] = useState(true)
+  const [errorCarga, setErrorCarga] = useState(false)
+  const [reintento, setReintento] = useState(0)
+  const [ahora, setAhora] = useState(() => Date.now())
 
-  const visitas: Visita[] = [
-    {
-      id: 1,
-      codigo: 'ARG005-001',
-      estudio: 'GZVA',
-      visita: 'V3',
-      hora: '08:00',
-      medico: 'Dr. Puleio',
-      consultorio: 'Consultorio 2',
-      estado: 'presente',
-      progreso: 46,
-      realizados: 6,
-      total: 13,
-      puedeAvanzar: ['TA / peso', 'Cuestionarios', 'ECG'],
-      pendientes: [
-        'Evaluación médica',
-        'Laboratorio',
-        'IWRS',
-        'IP',
-      ],
-    },
-    {
-      id: 2,
-      codigo: 'ARG005-008',
-      estudio: 'GZVA',
-      visita: 'V5',
-      hora: '09:30',
-      medico: 'Dr. Pérez',
-      consultorio: 'Consultorio 1',
-      estado: 'en_curso',
-      progreso: 70,
-      realizados: 7,
-      total: 10,
-      puedeAvanzar: ['Laboratorio'],
-      pendientes: [
-        'Decisión médica',
-        'IWRS',
-        'Dispensa IP',
-      ],
-    },
-    {
-      id: 3,
-      codigo: 'ARG005-014',
-      estudio: 'GZVA',
-      visita: 'V3',
-      hora: '10:00',
-      medico: 'Dr. Puleio',
-      consultorio: 'Consultorio 3',
-      estado: 'esperado',
-      progreso: 0,
-      realizados: 0,
-      total: 13,
-      puedeAvanzar: [],
-      pendientes: ['Paciente aún no presente'],
-    },
-  ]
+  useEffect(() => {
+    const controller = new AbortController()
+    const currentDate = new Date()
+    const year = currentDate.getFullYear()
+    const month = String(currentDate.getMonth() + 1).padStart(2, '0')
+    const day = String(currentDate.getDate()).padStart(2, '0')
+    const localDate = `${year}-${month}-${day}`
 
-  const alertas = [
-    {
-      tipo: 'espera',
-      texto: 'ARG005-008 lleva más de 30 min en el centro',
-    },
-    {
-      tipo: 'protocolo',
-      texto: 'ARG005-001: IWRS todavía no habilitado',
-    },
-    {
-      tipo: 'pendiente',
-      texto: 'ARG005-014: confirmar ayuno al llegar',
-    },
-  ]
+    async function cargarVisitas() {
+      setCargando(true)
+      setErrorCarga(false)
+
+      try {
+        if (!API_BASE_URL) throw new Error('API URL no configurada')
+
+        const response = await fetch(`${API_BASE_URL}/visits?date=${localDate}`, {
+          signal: controller.signal,
+        })
+        if (!response.ok) throw new Error('No se pudieron cargar las visitas')
+
+        const data = (await response.json()) as Visit[]
+        setVisitas(
+          data.sort((first, second) =>
+            first.scheduledTime.localeCompare(second.scheduledTime),
+          ),
+        )
+      } catch {
+        if (!controller.signal.aborted) setErrorCarga(true)
+      } finally {
+        if (!controller.signal.aborted) setCargando(false)
+      }
+    }
+
+    void cargarVisitas()
+    return () => controller.abort()
+  }, [reintento])
+
+  useEffect(() => {
+    const intervalId = window.setInterval(() => setAhora(Date.now()), 60_000)
+    return () => window.clearInterval(intervalId)
+  }, [])
+
+  function estadoVisita(visita: Visit): VisitView {
+    if (visita.status === 'SCHEDULED') {
+      const [year, month, day] = visita.scheduledDate.split('-').map(Number)
+      const [hour, minute] = visita.scheduledTime.split(':').map(Number)
+      const scheduledAt = new Date(year, month - 1, day, hour, minute).getTime()
+      const minutes = Math.floor((ahora - scheduledAt) / 60_000)
+      if (minutes > 30) {
+        return { text: `Demorado · ${minutes} min`, className: 'estado-demorado', alert: 'demora', minutes }
+      }
+      return { text: 'Esperado', className: 'estado-esperado' }
+    }
+
+    if (visita.status === 'PRESENT') {
+      if (visita.arrivalAt) {
+        const minutes = Math.max(0, Math.floor((ahora - new Date(visita.arrivalAt).getTime()) / 60_000))
+        if (minutes > 30) {
+          return { text: `Espera prolongada · ${minutes} min`, className: 'estado-espera', alert: 'espera', minutes }
+        }
+        return { text: `Presente · espera ${minutes} min`, className: 'estado-presente' }
+      }
+      return { text: 'Presente', className: 'estado-presente' }
+    }
+
+    if (visita.status === 'IN_PROGRESS') return { text: 'En curso', className: 'estado-en_curso' }
+    if (visita.status === 'NO_SHOW') return { text: 'No asistió', className: 'estado-no_show' }
+    return { text: 'Completado', className: 'estado-completado' }
+  }
+
+  const alertas = visitas.flatMap((visita) => {
+    const state = estadoVisita(visita)
+    if (!state.alert) return []
+    const personVisit = `${visita.participant.code} · ${visita.visitCode}`
+    return [{
+      tipo: state.alert === 'demora' ? 'espera' : 'espera',
+      texto: state.alert === 'demora'
+        ? `${personVisit} lleva ${state.minutes} min demorado`
+        : `${personVisit} lleva ${state.minutes} min presente sin iniciar`,
+    }]
+  })
+
+  const visitasPresentes = visitas.filter((visita) => visita.status === 'PRESENT').length
+  const visitasEnCurso = visitas.filter((visita) => visita.status === 'IN_PROGRESS').length
 
   const procedimientosPorVisita: Record<string, Procedimiento[]> = {
     V3: [
@@ -348,13 +380,7 @@ export default function StudyCoordinator({
   }
 
   const procedimientosActuales =
-    procedimientosPorVisita[visitaAbierta?.visita ?? ''] ?? []
-
-  function textoEstado(estado: Visita['estado']) {
-    if (estado === 'presente') return 'Presente'
-    if (estado === 'en_curso') return 'En curso'
-    return 'Esperado'
-  }
+    procedimientosPorVisita[visitaAbierta?.visitCode ?? ''] ?? []
 
   function claseProcedimiento(estado: Procedimiento['estado']) {
     if (estado === 'realizado') return 'proc-realizado'
@@ -547,6 +573,18 @@ export default function StudyCoordinator({
             color: #32465a;
           }
 
+          .boton-secundario:disabled {
+            cursor: not-allowed;
+            opacity: .58;
+          }
+
+          .nota-plantilla {
+            margin: -4px 0 16px;
+            color: #69788b;
+            font-size: 13px;
+            line-height: 1.45;
+          }
+
           @media (max-width: 1000px) {
             .detalle-resumen {
               grid-template-columns: repeat(2, 1fr);
@@ -572,7 +610,7 @@ export default function StudyCoordinator({
           <header className="detalle-header">
             <div>
               <h1>
-                {visitaAbierta.codigo} · {visitaAbierta.estudio} · {visitaAbierta.visita}
+                {visitaAbierta.participant.code} · {visitaAbierta.participant.studyCode} · {visitaAbierta.visitCode}
               </h1>
               <p>Control operativo de visita</p>
             </div>
@@ -589,37 +627,46 @@ export default function StudyCoordinator({
             <section className="detalle-resumen">
               <div>
                 <div className="dato-label">Hora</div>
-                <div className="dato-valor">{visitaAbierta.hora}</div>
+                <div className="dato-valor">{visitaAbierta.scheduledTime.slice(0, 5)}</div>
               </div>
 
               <div>
                 <div className="dato-label">Médico</div>
-                <div className="dato-valor">{visitaAbierta.medico}</div>
+                <div className="dato-valor">{visitaAbierta.assignedDoctor}</div>
               </div>
 
               <div>
                 <div className="dato-label">Consultorio</div>
-                <div className="dato-valor">{visitaAbierta.consultorio}</div>
+                <div className="dato-valor">{visitaAbierta.room ?? 'Sin asignar'}</div>
               </div>
 
               <div>
                 <div className="dato-label">Estado</div>
                 <div className="dato-valor">
-                  {textoEstado(visitaAbierta.estado)}
+                  {estadoVisita(visitaAbierta).text}
                 </div>
               </div>
 
               <div>
-                <div className="dato-label">Progreso</div>
+                <div className="dato-label">Llegada</div>
                 <div className="dato-valor">
-                  {visitaAbierta.realizados}/{visitaAbierta.total}
+                  {visitaAbierta.arrivalAt
+                    ? new Date(visitaAbierta.arrivalAt).toLocaleTimeString('es-AR', {
+                        hour: '2-digit',
+                        minute: '2-digit',
+                        hour12: false,
+                      })
+                    : 'Sin registrar'}
                 </div>
               </div>
             </section>
 
             <div className="detalle-layout">
               <section className="detalle-panel">
-                <h2>Procedimientos GZVA · {visitaAbierta.visita}</h2>
+                <h2>Procedimientos GZVA · {visitaAbierta.visitCode}</h2>
+                <p className="nota-plantilla">
+                  Plantilla protocolaria. El estado de los procedimientos se conectará al registro operativo en la siguiente etapa.
+                </p>
 
                 {procedimientosActuales.map((procedimiento) => (
                   <div
@@ -659,42 +706,38 @@ export default function StudyCoordinator({
                     </div>
                   </div>
                 ))}
+                {procedimientosActuales.length === 0 && (
+                  <p className="nota-plantilla">No hay plantilla protocolaria configurada para esta visita.</p>
+                )}
               </section>
 
               <aside className="detalle-panel">
                 <h2>Control SC</h2>
 
                 <div className="side-block">
-                  <div className="side-title">Pendientes activos</div>
+                  <div className="side-title">Registro operativo</div>
                   <div className="side-text">
-                    Evaluación médica, laboratorio, IWRS y dispensa de IP.
+                    Las acciones de coordinación todavía no están conectadas a registros persistentes.
                   </div>
                 </div>
 
                 <div className="side-block">
-                  <div className="side-title">Siguiente paso sugerido</div>
+                  <div className="side-title">Visita en PostgreSQL</div>
                   <div className="side-text">
-                    Puede continuar con cuestionarios, ECG o evaluación médica.
+                    {visitaAbierta.status}
                   </div>
                 </div>
 
-                <div className="side-block">
-                  <div className="side-title">Advertencia de protocolo</div>
-                  <div className="side-text">
-                    IWRS permanece bloqueado hasta contar con autorización médica.
-                  </div>
-                </div>
-
-                <button className="boton-secundario">
-                  Reasignar médico
+                <button className="boton-secundario" disabled title="Próximamente">
+                  Reasignar médico · Próximamente
                 </button>
 
-                <button className="boton-secundario">
-                  Editar consultorio
+                <button className="boton-secundario" disabled title="Próximamente">
+                  Editar consultorio · Próximamente
                 </button>
 
-                <button className="boton-secundario">
-                  Registrar incidencia
+                <button className="boton-secundario" disabled title="Próximamente">
+                  Registrar incidencia · Próximamente
                 </button>
               </aside>
             </div>
@@ -848,6 +891,55 @@ export default function StudyCoordinator({
         .estado-esperado {
           background: #edf2f7;
           color: #526173;
+        }
+
+        .estado-demorado,
+        .estado-espera {
+          background: #fff1df;
+          color: #9a5a08;
+        }
+
+        .estado-no_show,
+        .estado-completado {
+          background: #edf0f3;
+          color: #526173;
+        }
+
+        .visita-llegada {
+          margin-top: 7px;
+          color: #526173;
+          font-size: 13px;
+        }
+
+        .sc-mensaje {
+          padding: 12px 14px;
+          border-radius: 8px;
+          margin: 12px 0;
+          color: #526173;
+          background: #f4f7fb;
+          border: 1px solid #e2e8f0;
+        }
+
+        .sc-mensaje.error {
+          background: #fff0ed;
+          color: #843728;
+          border-color: #efc2b8;
+        }
+
+        .sc-retry {
+          margin-top: 9px;
+          padding: 8px 12px;
+          border: 1px solid #b9d7e8;
+          border-radius: 7px;
+          background: white;
+          color: #17658e;
+          cursor: pointer;
+          font-weight: 600;
+        }
+
+        .boton:disabled {
+          cursor: not-allowed;
+          opacity: .58;
         }
 
         .progreso-wrap {
@@ -1019,14 +1111,14 @@ export default function StudyCoordinator({
             </div>
 
             <div className="sc-indicador">
-              <div className="sc-numero">1</div>
+              <div className="sc-numero">{visitasPresentes}</div>
               <div className="sc-label">
                 Presentes
               </div>
             </div>
 
             <div className="sc-indicador">
-              <div className="sc-numero">1</div>
+              <div className="sc-numero">{visitasEnCurso}</div>
               <div className="sc-label">
                 En curso
               </div>
@@ -1046,7 +1138,25 @@ export default function StudyCoordinator({
             <section className="sc-panel">
               <h2>Flujo de hoy</h2>
 
-              {visitas.map((visita) => (
+              {cargando && <div className="sc-mensaje" aria-live="polite">Cargando flujo del día...</div>}
+
+              {!cargando && errorCarga && (
+                <div className="sc-mensaje error" role="alert">
+                  No se pudo conectar con el servidor local
+                  <br />
+                  <button className="sc-retry" onClick={() => setReintento((value) => value + 1)}>
+                    Reintentar
+                  </button>
+                </div>
+              )}
+
+              {!cargando && !errorCarga && visitas.length === 0 && (
+                <div className="sc-mensaje">No hay visitas para hoy.</div>
+              )}
+
+              {!cargando && !errorCarga && visitas.map((visita) => {
+                const estado = estadoVisita(visita)
+                return (
                 <div
                   className="visita-card"
                   key={visita.id}
@@ -1054,86 +1164,37 @@ export default function StudyCoordinator({
                   <div className="visita-top">
                     <div>
                       <div className="visita-hora">
-                        {visita.hora}
+                        {visita.scheduledTime.slice(0, 5)}
                       </div>
 
                       <div className="visita-codigo">
-                        {visita.codigo}
+                        {visita.participant.code}
                       </div>
 
                       <div className="muted">
-                        {visita.estudio} · {visita.visita}
+                        {visita.participant.studyCode} · {visita.visitCode}
                       </div>
 
                       <div className="muted">
-                        {visita.medico} · {visita.consultorio}
-                      </div>
-                    </div>
-
-                    <span
-                      className={`estado estado-${visita.estado}`}
-                    >
-                      {textoEstado(visita.estado)}
-                    </span>
-                  </div>
-
-                  <div className="progreso-wrap">
-                    <div className="progreso-info">
-                      <span>
-                        {visita.realizados}/{visita.total} procedimientos
-                      </span>
-
-                      <span>
-                        {visita.progreso}%
-                      </span>
-                    </div>
-
-                    <div className="progreso">
-                      <div
-                        className="progreso-barra"
-                        style={{
-                          width: `${visita.progreso}%`,
-                        }}
-                      />
-                    </div>
-                  </div>
-
-                  <div className="acciones">
-                    <div className="bloque">
-                      <div className="bloque-titulo">
-                        Puede avanzar ahora
+                        {visita.assignedDoctor} · {visita.room ?? 'Consultorio sin asignar'}
                       </div>
 
-                      {visita.puedeAvanzar.length === 0 ? (
-                        <div className="item">
-                          Ningún procedimiento habilitado
+                      {visita.arrivalAt && (
+                        <div className="visita-llegada">
+                          Llegó {new Date(visita.arrivalAt).toLocaleTimeString('es-AR', {
+                            hour: '2-digit',
+                            minute: '2-digit',
+                            hour12: false,
+                          })}
                         </div>
-                      ) : (
-                        visita.puedeAvanzar.map((item) => (
-                          <div
-                            className="item habilitado"
-                            key={item}
-                          >
-                            ● {item}
-                          </div>
-                        ))
                       )}
                     </div>
 
-                    <div className="bloque">
-                      <div className="bloque-titulo">
-                        Pendientes
-                      </div>
-
-                      {visita.pendientes.map((item) => (
-                        <div
-                          className="item"
-                          key={item}
-                        >
-                          ○ {item}
-                        </div>
-                      ))}
-                    </div>
+                    <span
+                      className={`estado ${estado.className}`}
+                    >
+                      {estado.text}
+                    </span>
                   </div>
 
                   <div className="botones">
@@ -1144,39 +1205,35 @@ export default function StudyCoordinator({
                       Abrir visita
                     </button>
 
-                    <button className="boton">
-                      Solicitar médico
+                    <button className="boton" disabled title="Próximamente">
+                      Solicitar médico · Próximamente
                     </button>
 
-                    <button className="boton">
-                      Solicitar laboratorio
+                    <button className="boton" disabled title="Próximamente">
+                      Solicitar laboratorio · Próximamente
                     </button>
                   </div>
                 </div>
-              ))}
+                )
+              })}
             </section>
 
             <aside className="sc-panel">
               <h2>Alertas</h2>
 
-              {alertas.map((alerta) => (
-                <div
-                  className="alerta"
-                  key={alerta.texto}
-                >
-                  <div
-                    className={`alerta-titulo ${alerta.tipo}`}
-                  >
-                    {alerta.tipo === 'espera' && 'ESPERA'}
-                    {alerta.tipo === 'protocolo' && 'PROTOCOLO'}
-                    {alerta.tipo === 'pendiente' && 'PENDIENTE'}
-                  </div>
+              {!cargando && !errorCarga && alertas.length === 0 && (
+                <div className="alerta-texto">Sin alertas por demora o espera prolongada.</div>
+              )}
 
-                  <div className="alerta-texto">
-                    {alerta.texto}
-                  </div>
+              {!cargando && !errorCarga && alertas.map((alerta) => (
+                <div className="alerta" key={alerta.texto}>
+                  <div className="alerta-titulo espera">ESPERA</div>
+                  <div className="alerta-texto">{alerta.texto}</div>
                 </div>
               ))}
+
+              {cargando && <div className="alerta-texto">Cargando alertas...</div>}
+              {errorCarga && <div className="alerta-texto">Alertas no disponibles.</div>}
             </aside>
           </div>
         </main>
