@@ -1,11 +1,12 @@
 import { useState } from 'react'
+import Laboratorio from './pages/Laboratorio'
 import Medico from './pages/Medico'
 import Recepcion from './pages/Recepcion'
 import StudyCoordinator from './pages/StudyCoordinator'
 
 function App() {
   const [pantalla, setPantalla] = useState<
-    'inicio' | 'recepcion' | 'sc' | 'medico'
+    'inicio' | 'recepcion' | 'sc' | 'medico' | 'laboratorio'
   >('inicio')
 
   if (pantalla === 'recepcion') {
@@ -22,6 +23,10 @@ function App() {
 
   if (pantalla === 'medico') {
     return <Medico onVolver={() => setPantalla('inicio')} />
+  }
+
+  if (pantalla === 'laboratorio') {
+    return <Laboratorio onVolver={() => setPantalla('inicio')} />
   }
 
   const fecha = new Date().toLocaleDateString('es-AR', {
@@ -222,6 +227,10 @@ function App() {
 
                   if (rol.titulo === 'Médico') {
                     setPantalla('medico')
+                  }
+
+                  if (rol.titulo === 'Laboratorio') {
+                    setPantalla('laboratorio')
                   }
                 }}
               >
