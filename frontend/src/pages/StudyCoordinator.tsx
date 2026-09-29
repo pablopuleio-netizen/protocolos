@@ -1,14 +1,9 @@
 import { useEffect, useState } from 'react'
 import { API_BASE_URL } from '../config/api'
 
-type Participant = {
-  id: string
-  code: string
-  studyCode: string
-}
-
+type Participant = { id: string; code: string; studyCode: string }
 type VisitStatus = 'SCHEDULED' | 'PRESENT' | 'IN_PROGRESS' | 'NO_SHOW' | 'COMPLETED'
-
+type ProcedureStatus = 'PENDING' | 'READY' | 'IN_PROGRESS' | 'COMPLETED' | 'BLOCKED' | 'NOT_APPLICABLE'
 type Visit = {
   id: string
   participant: Participant
@@ -22,1222 +17,408 @@ type Visit = {
   startedAt: string | null
   completedAt: string | null
 }
+type VisitProcedure = {
+  id: string
+  visit: { id: string }
+  code: string
+  name: string
+  category: string
+  responsibleRole: 'DOCTOR' | 'STUDY_COORDINATOR' | 'LAB' | 'ECG_TECH' | 'SHARED'
+  status: ProcedureStatus
+  timeCaptureMode: 'NONE' | 'OPTIONAL' | 'REQUIRED'
+  sortOrder: number
+  blockedReason: string | null
+  dependsOnCodes: string[]
+  startedAt: string | null
+  completedAt: string | null
+  performedAt: string | null
+  recordedAt: string | null
+  recordedBy: string | null
+}
+type ClinicalRecord = {
+  fastingStatus: 'YES' | 'NO' | 'DOUBTFUL' | 'NOT_RECORDED'
+  fastingHours: string | number | null
+  weightKg: string | number | null
+  waistCm: string | number | null
+  systolic1: number | null; diastolic1: number | null; pulse1: number | null
+  systolic2: number | null; diastolic2: number | null; pulse2: number | null
+  systolic3: number | null; diastolic3: number | null; pulse3: number | null
+  conmedReviewed: boolean | null; conmedChanges: boolean | null
+  aeReviewed: boolean | null; hasActiveAe: boolean | null
+  phq9Completed: boolean | null; cssrsCompleted: boolean | null; cssrsAlert: boolean | null
+  eligibilityDecision: 'ELIGIBLE' | 'NOT_ELIGIBLE' | 'PENDING' | null
+  continueStudy: 'YES' | 'NO' | 'PENDING' | null
+  doseDecision: string | null
+  updatedAt: string
+}
+type VisitData = { visit: Visit; procedures: VisitProcedure[]; record: ClinicalRecord }
+type Alert = { key: string; text: string; kind: 'blocked' | 'ready' | 'clinical' }
+type Activity = { id: string; at: string; clinicalTime: boolean; text: string; by: string | null }
 
-type VisitView = {
-  text: string
-  className: string
-  alert?: 'demora' | 'espera'
-  minutes?: number
+type StudyCoordinatorProps = { onVolver: () => void }
+
+function localDateString() {
+  const now = new Date()
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
 }
 
-type StudyCoordinatorProps = {
-  onVolver: () => void
+function timeLabel(timestamp: string | null) {
+  if (!timestamp) return 'Sin registrar'
+  return new Date(timestamp).toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', hour12: false })
 }
 
-type Procedimiento = {
-  nombre: string
-  responsable: string
-  estado: 'realizado' | 'habilitado' | 'bloqueado'
-  motivo?: string
-  hora?: string
+function statusName(status: VisitStatus) {
+  if (status === 'SCHEDULED') return 'Esperado'
+  if (status === 'PRESENT') return 'Presente'
+  if (status === 'IN_PROGRESS') return 'En atención'
+  if (status === 'NO_SHOW') return 'No asistió'
+  return 'Completado'
 }
 
-export default function StudyCoordinator({
-  onVolver,
-}: StudyCoordinatorProps) {
-  const [visitas, setVisitas] = useState<Visit[]>([])
+function procedureStatusName(status: ProcedureStatus) {
+  if (status === 'READY') return 'Listo'
+  if (status === 'IN_PROGRESS') return 'En curso'
+  if (status === 'COMPLETED') return 'Completado'
+  if (status === 'BLOCKED') return 'Bloqueado'
+  if (status === 'NOT_APPLICABLE') return 'No aplica'
+  return 'Pendiente'
+}
+
+function roleName(role: VisitProcedure['responsibleRole']) {
+  if (role === 'DOCTOR') return 'Médico'
+  if (role === 'STUDY_COORDINATOR') return 'Study Coordinator'
+  if (role === 'LAB') return 'Laboratorio'
+  if (role === 'ECG_TECH') return 'ECG'
+  return 'Compartido'
+}
+
+function visitStatusView(visit: Visit, now: number) {
+  if (visit.status === 'SCHEDULED') {
+    const [year, month, day] = visit.scheduledDate.split('-').map(Number)
+    const [hour, minute] = visit.scheduledTime.split(':').map(Number)
+    const scheduledAt = new Date(year, month - 1, day, hour, minute).getTime()
+    const minutes = Math.floor((now - scheduledAt) / 60_000)
+    if (minutes > 30) return { text: `Demorado · ${minutes} min`, className: 'visit-late', waitAlert: true }
+    return { text: 'Esperado', className: 'visit-scheduled', waitAlert: false }
+  }
+  if (visit.status === 'PRESENT' && visit.arrivalAt) {
+    const minutes = Math.max(0, Math.floor((now - new Date(visit.arrivalAt).getTime()) / 60_000))
+    if (minutes > 30) return { text: `Espera prolongada · ${minutes} min`, className: 'visit-late', waitAlert: true }
+    return { text: `Presente · espera ${minutes} min`, className: 'visit-present', waitAlert: false }
+  }
+  return { text: statusName(visit.status), className: `visit-${visit.status.toLowerCase()}`, waitAlert: false }
+}
+
+function alertsFor(visit: Visit, procedures: VisitProcedure[], record: ClinicalRecord | null): Alert[] {
+  const alerts: Alert[] = []
+  for (const procedure of procedures) {
+    if (procedure.status === 'BLOCKED') {
+      alerts.push({ key: `blocked-${procedure.id}`, text: `${procedure.name} bloqueado${procedure.blockedReason ? ` — falta ${procedure.blockedReason.replace(/^Pendiente:\s*/, '')}` : ''}`, kind: 'blocked' })
+    } else if (procedure.status === 'READY') {
+      alerts.push({ key: `ready-${procedure.id}`, text: `${procedure.name} listo, todavía no iniciado`, kind: 'ready' })
+    }
+  }
+  if (record?.hasActiveAe === true) alerts.push({ key: `ae-${visit.id}`, text: 'AE activo informado', kind: 'clinical' })
+  if (record?.cssrsAlert === true) alerts.push({ key: `cssrs-${visit.id}`, text: 'Alerta C-SSRS informada', kind: 'clinical' })
+  if (record?.fastingStatus === 'NO') alerts.push({ key: `fasting-no-${visit.id}`, text: 'Ayuno: No', kind: 'clinical' })
+  if (record?.fastingStatus === 'DOUBTFUL') alerts.push({ key: `fasting-doubt-${visit.id}`, text: 'Ayuno dudoso', kind: 'clinical' })
+  if (record?.eligibilityDecision === 'PENDING') alerts.push({ key: `eligibility-${visit.id}`, text: 'Elegibilidad pendiente', kind: 'clinical' })
+  if (record?.continueStudy === 'PENDING') alerts.push({ key: `continue-${visit.id}`, text: 'Continuidad pendiente', kind: 'clinical' })
+  return alerts
+}
+
+export default function StudyCoordinator({ onVolver }: StudyCoordinatorProps) {
+  const [data, setData] = useState<VisitData[]>([])
   const [visitaAbierta, setVisitaAbierta] = useState<Visit | null>(null)
-  const [cargando, setCargando] = useState(true)
-  const [errorCarga, setErrorCarga] = useState(false)
-  const [reintento, setReintento] = useState(0)
-  const [ahora, setAhora] = useState(() => Date.now())
+  const [procedimientosAbiertos, setProcedimientosAbiertos] = useState<VisitProcedure[]>([])
+  const [registroAbierto, setRegistroAbierto] = useState<ClinicalRecord | null>(null)
+  const [loadingList, setLoadingList] = useState(true)
+  const [loadingDetail, setLoadingDetail] = useState(false)
+  const [listError, setListError] = useState(false)
+  const [detailError, setDetailError] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
+  const [reloadKey, setReloadKey] = useState(0)
+  const [now, setNow] = useState(() => Date.now())
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 60_000)
+    return () => window.clearInterval(timer)
+  }, [])
 
   useEffect(() => {
     const controller = new AbortController()
-    const currentDate = new Date()
-    const year = currentDate.getFullYear()
-    const month = String(currentDate.getMonth() + 1).padStart(2, '0')
-    const day = String(currentDate.getDate()).padStart(2, '0')
-    const localDate = `${year}-${month}-${day}`
-
-    async function cargarVisitas() {
-      setCargando(true)
-      setErrorCarga(false)
-
+    const date = localDateString()
+    async function loadList() {
+      setLoadingList(true)
+      setListError(false)
       try {
-        if (!API_BASE_URL) throw new Error('API URL no configurada')
-
-        const response = await fetch(`${API_BASE_URL}/visits?date=${localDate}`, {
-          signal: controller.signal,
-        })
-        if (!response.ok) throw new Error('No se pudieron cargar las visitas')
-
-        const data = (await response.json()) as Visit[]
-        setVisitas(
-          data.sort((first, second) =>
-            first.scheduledTime.localeCompare(second.scheduledTime),
-          ),
-        )
+        const response = await fetch(`${API_BASE_URL}/visits?date=${date}`, { signal: controller.signal })
+        if (!response.ok) throw new Error()
+        const visits = (await response.json()) as Visit[]
+        const sorted = visits.sort((first, second) => first.scheduledTime.localeCompare(second.scheduledTime))
+        const loaded = await Promise.all(sorted.map(async (visit) => {
+          const [procedureResponse, recordResponse] = await Promise.all([
+            fetch(`${API_BASE_URL}/visits/${visit.id}/procedures`, { signal: controller.signal }),
+            fetch(`${API_BASE_URL}/visits/${visit.id}/clinical-record`, { signal: controller.signal }),
+          ])
+          if (!procedureResponse.ok || !recordResponse.ok) throw new Error()
+          const [procedures, record] = await Promise.all([procedureResponse.json(), recordResponse.json()]) as [VisitProcedure[], ClinicalRecord]
+          return { visit, procedures, record }
+        }))
+        setData(loaded)
       } catch {
-        if (!controller.signal.aborted) setErrorCarga(true)
+        if (!controller.signal.aborted) { setListError(true); setData([]) }
       } finally {
-        if (!controller.signal.aborted) setCargando(false)
+        if (!controller.signal.aborted) setLoadingList(false)
       }
     }
-
-    void cargarVisitas()
+    void loadList()
     return () => controller.abort()
-  }, [reintento])
+  }, [reloadKey])
 
   useEffect(() => {
-    const intervalId = window.setInterval(() => setAhora(Date.now()), 60_000)
-    return () => window.clearInterval(intervalId)
-  }, [])
-
-  function estadoVisita(visita: Visit): VisitView {
-    if (visita.status === 'SCHEDULED') {
-      const [year, month, day] = visita.scheduledDate.split('-').map(Number)
-      const [hour, minute] = visita.scheduledTime.split(':').map(Number)
-      const scheduledAt = new Date(year, month - 1, day, hour, minute).getTime()
-      const minutes = Math.floor((ahora - scheduledAt) / 60_000)
-      if (minutes > 30) {
-        return { text: `Demorado · ${minutes} min`, className: 'estado-demorado', alert: 'demora', minutes }
+    if (!visitaAbierta) return
+    const activeVisit = visitaAbierta
+    const controller = new AbortController()
+    async function loadDetail() {
+      setLoadingDetail(true)
+      setDetailError(false)
+      try {
+        const [procedureResponse, recordResponse] = await Promise.all([
+          fetch(`${API_BASE_URL}/visits/${activeVisit.id}/procedures`, { signal: controller.signal }),
+          fetch(`${API_BASE_URL}/visits/${activeVisit.id}/clinical-record`, { signal: controller.signal }),
+        ])
+        if (!procedureResponse.ok || !recordResponse.ok) throw new Error()
+        const [procedures, record] = await Promise.all([procedureResponse.json(), recordResponse.json()]) as [VisitProcedure[], ClinicalRecord]
+        setProcedimientosAbiertos(procedures.sort((first, second) => first.sortOrder - second.sortOrder))
+        setRegistroAbierto(record)
+      } catch {
+        if (!controller.signal.aborted) setDetailError(true)
+      } finally {
+        if (!controller.signal.aborted) setLoadingDetail(false)
       }
-      return { text: 'Esperado', className: 'estado-esperado' }
     }
+    void loadDetail()
+    return () => controller.abort()
+  }, [visitaAbierta, reloadKey])
 
-    if (visita.status === 'PRESENT') {
-      if (visita.arrivalAt) {
-        const minutes = Math.max(0, Math.floor((ahora - new Date(visita.arrivalAt).getTime()) / 60_000))
-        if (minutes > 30) {
-          return { text: `Espera prolongada · ${minutes} min`, className: 'estado-espera', alert: 'espera', minutes }
-        }
-        return { text: `Presente · espera ${minutes} min`, className: 'estado-presente' }
-      }
-      return { text: 'Presente', className: 'estado-presente' }
+  const alertsByVisit = new Map(data.map(({ visit, procedures, record }) => [visit.id, alertsFor(visit, procedures, record)]))
+  const alertsCount = data.reduce((count, item) => count + alertsFor(item.visit, item.procedures, item.record).length, 0)
+  const visitsWithAlerts = data.filter((item) => alertsFor(item.visit, item.procedures, item.record).length > 0).length
+  const blockedCount = data.reduce((count, item) => count + item.procedures.filter((procedure) => procedure.status === 'BLOCKED').length, 0)
+  const presenteCount = data.filter(({ visit }) => visit.status === 'PRESENT').length
+  const inProgressCount = data.filter(({ visit }) => visit.status === 'IN_PROGRESS').length
+
+  function refreshAll() {
+    setRefreshing(true)
+    setReloadKey((value) => value + 1)
+    window.setTimeout(() => setRefreshing(false), 500)
+  }
+
+  function openVisit(visit: Visit) {
+    setProcedimientosAbiertos([])
+    setRegistroAbierto(null)
+    setVisitaAbierta(visit)
+  }
+
+  function closeVisit() {
+    setVisitaAbierta(null)
+    setProcedimientosAbiertos([])
+    setRegistroAbierto(null)
+  }
+
+  function procedureCounts(procedures: VisitProcedure[]) {
+    return {
+      completed: procedures.filter((procedure) => procedure.status === 'COMPLETED').length,
+      ready: procedures.filter((procedure) => procedure.status === 'READY').length,
+      blocked: procedures.filter((procedure) => procedure.status === 'BLOCKED').length,
+      pending: procedures.filter((procedure) => procedure.status === 'PENDING').length,
+      inProgress: procedures.filter((procedure) => procedure.status === 'IN_PROGRESS').length,
+      total: procedures.filter((procedure) => procedure.status !== 'NOT_APPLICABLE').length,
     }
-
-    if (visita.status === 'IN_PROGRESS') return { text: 'En curso', className: 'estado-en_curso' }
-    if (visita.status === 'NO_SHOW') return { text: 'No asistió', className: 'estado-no_show' }
-    return { text: 'Completado', className: 'estado-completado' }
   }
 
-  const alertas = visitas.flatMap((visita) => {
-    const state = estadoVisita(visita)
-    if (!state.alert) return []
-    const personVisit = `${visita.participant.code} · ${visita.visitCode}`
-    return [{
-      tipo: state.alert === 'demora' ? 'espera' : 'espera',
-      texto: state.alert === 'demora'
-        ? `${personVisit} lleva ${state.minutes} min demorado`
-        : `${personVisit} lleva ${state.minutes} min presente sin iniciar`,
-    }]
-  })
-
-  const visitasPresentes = visitas.filter((visita) => visita.status === 'PRESENT').length
-  const visitasEnCurso = visitas.filter((visita) => visita.status === 'IN_PROGRESS').length
-
-  const procedimientosPorVisita: Record<string, Procedimiento[]> = {
-    V3: [
-      {
-        nombre: 'Confirmación de ayuno',
-        responsable: 'Médico',
-        estado: 'realizado',
-        hora: '08:12',
-      },
-      {
-        nombre: 'Elegibilidad final I/E',
-        responsable: 'Médico',
-        estado: 'realizado',
-        hora: '08:15',
-      },
-      {
-        nombre: 'Medicación concomitante y eventos adversos',
-        responsable: 'Médico',
-        estado: 'realizado',
-        hora: '08:20',
-      },
-      {
-        nombre: 'Peso, cintura y signos vitales',
-        responsable: 'Médico',
-        estado: 'habilitado',
-      },
-      {
-        nombre: 'Evaluación física dirigida',
-        responsable: 'Médico',
-        estado: 'habilitado',
-      },
-      {
-        nombre: 'ECG',
-        responsable: 'ECG',
-        estado: 'bloqueado',
-        motivo: 'Realizar después de signos vitales',
-      },
-      {
-        nombre: 'PRO basales',
-        responsable: 'Médico / eCOA',
-        estado: 'habilitado',
-      },
-      {
-        nombre: 'PHQ-9',
-        responsable: 'Médico / eCOA',
-        estado: 'habilitado',
-      },
-      {
-        nombre: 'C-SSRS',
-        responsable: 'Médico / eCOA',
-        estado: 'bloqueado',
-        motivo: 'AEs deben estar revisados y PHQ-9 debe preceder a C-SSRS',
-      },
-      {
-        nombre: 'DXA basal / MRI-AMRA / BIA según corresponda',
-        responsable: 'Study Coordinator',
-        estado: 'habilitado',
-      },
-      {
-        nombre: 'Laboratorio y muestras basales',
-        responsable: 'Laboratorio',
-        estado: 'bloqueado',
-        motivo: 'Realizar después de signos vitales',
-      },
-      {
-        nombre: 'Asesoramiento de estilo de vida',
-        responsable: 'Médico',
-        estado: 'habilitado',
-      },
-      {
-        nombre: 'IWRS y randomización',
-        responsable: 'Study Coordinator',
-        estado: 'bloqueado',
-        motivo: 'Requiere elegibilidad final y procedimientos basales completos',
-      },
-      {
-        nombre: 'Dispensa de IP',
-        responsable: 'Study Coordinator',
-        estado: 'bloqueado',
-        motivo: 'Randomización/IWRS pendiente',
-      },
-      {
-        nombre: 'Primera dosis',
-        responsable: 'Médico / Study Coordinator',
-        estado: 'bloqueado',
-        motivo: 'Debe administrarse al final de la visita',
-      },
-    ],
-
-    V5: [
-      {
-        nombre: 'Confirmación de ayuno',
-        responsable: 'Médico',
-        estado: 'realizado',
-        hora: '09:38',
-      },
-      {
-        nombre: 'Medicación concomitante y eventos adversos',
-        responsable: 'Médico',
-        estado: 'realizado',
-        hora: '09:42',
-      },
-      {
-        nombre: 'Peso, cintura y signos vitales',
-        responsable: 'Médico',
-        estado: 'habilitado',
-      },
-      {
-        nombre: 'Evaluación dirigida a síntomas',
-        responsable: 'Médico',
-        estado: 'habilitado',
-      },
-      {
-        nombre: 'EBAQ-17 y FNQ',
-        responsable: 'Médico / eCOA',
-        estado: 'habilitado',
-      },
-      {
-        nombre: 'PHQ-9',
-        responsable: 'Médico / eCOA',
-        estado: 'habilitado',
-      },
-      {
-        nombre: 'C-SSRS',
-        responsable: 'Médico / eCOA',
-        estado: 'bloqueado',
-        motivo: 'AEs deben estar revisados y PHQ-9 debe preceder a C-SSRS',
-      },
-      {
-        nombre: 'Laboratorio según SoA',
-        responsable: 'Laboratorio',
-        estado: 'bloqueado',
-        motivo: 'Realizar después de signos vitales',
-      },
-      {
-        nombre: 'Asesoramiento de estilo de vida',
-        responsable: 'Médico',
-        estado: 'habilitado',
-      },
-      {
-        nombre: 'Devolución de IP y accountability',
-        responsable: 'Study Coordinator',
-        estado: 'habilitado',
-      },
-      {
-        nombre: 'Evaluación de adherencia',
-        responsable: 'Study Coordinator',
-        estado: 'habilitado',
-      },
-      {
-        nombre: 'Tolerabilidad y decisión de dosis',
-        responsable: 'Médico',
-        estado: 'bloqueado',
-        motivo: 'Requiere evaluación clínica de la visita',
-      },
-      {
-        nombre: 'IWRS',
-        responsable: 'Study Coordinator',
-        estado: 'bloqueado',
-        motivo: 'Requiere decisión médica de continuidad/dosis',
-      },
-      {
-        nombre: 'Dispensa de IP',
-        responsable: 'Study Coordinator',
-        estado: 'bloqueado',
-        motivo: 'IWRS pendiente',
-      },
-    ],
-
-    V7: [
-      {
-        nombre: 'Confirmación de ayuno',
-        responsable: 'Médico',
-        estado: 'habilitado',
-      },
-      {
-        nombre: 'Medicación concomitante y eventos adversos',
-        responsable: 'Médico',
-        estado: 'habilitado',
-      },
-      {
-        nombre: 'Peso, cintura y signos vitales',
-        responsable: 'Médico',
-        estado: 'bloqueado',
-        motivo: 'Paciente debe estar presente y comenzar evaluación',
-      },
-      {
-        nombre: 'Evaluación dirigida',
-        responsable: 'Médico',
-        estado: 'bloqueado',
-        motivo: 'Pendiente inicio de evaluación clínica',
-      },
-      {
-        nombre: 'EBAQ-17 y FNQ',
-        responsable: 'Médico / eCOA',
-        estado: 'bloqueado',
-        motivo: 'Pendiente inicio de visita',
-      },
-      {
-        nombre: 'PHQ-9',
-        responsable: 'Médico / eCOA',
-        estado: 'bloqueado',
-        motivo: 'Pendiente inicio de visita',
-      },
-      {
-        nombre: 'C-SSRS',
-        responsable: 'Médico / eCOA',
-        estado: 'bloqueado',
-        motivo: 'AEs deben estar revisados y PHQ-9 debe preceder a C-SSRS',
-      },
-      {
-        nombre: 'Asesoramiento de estilo de vida',
-        responsable: 'Médico',
-        estado: 'bloqueado',
-        motivo: 'Pendiente evaluación clínica',
-      },
-      {
-        nombre: 'Devolución de IP y accountability',
-        responsable: 'Study Coordinator',
-        estado: 'bloqueado',
-        motivo: 'Pendiente recepción del paciente',
-      },
-      {
-        nombre: 'Evaluación de adherencia',
-        responsable: 'Study Coordinator',
-        estado: 'bloqueado',
-        motivo: 'Pendiente devolución/accountability',
-      },
-      {
-        nombre: 'Tolerabilidad y decisión de dosis',
-        responsable: 'Médico',
-        estado: 'bloqueado',
-        motivo: 'Requiere evaluación clínica',
-      },
-      {
-        nombre: 'IWRS y dispensa',
-        responsable: 'Study Coordinator',
-        estado: 'bloqueado',
-        motivo: 'Requiere autorización médica',
-      },
-    ],
+  function procedureRoleClass(role: VisitProcedure['responsibleRole']) {
+    return `role-${role.toLowerCase().replace('_', '-')}`
   }
 
-  const procedimientosActuales =
-    procedimientosPorVisita[visitaAbierta?.visitCode ?? ''] ?? []
-
-  function claseProcedimiento(estado: Procedimiento['estado']) {
-    if (estado === 'realizado') return 'proc-realizado'
-    if (estado === 'habilitado') return 'proc-habilitado'
-    return 'proc-bloqueado'
+  function clinicalValue(value: string | number | boolean | null | undefined, suffix = '') {
+    if (value === null || value === undefined || value === '') return null
+    if (typeof value === 'boolean') return value ? 'Sí' : 'No'
+    return `${value}${suffix}`
   }
 
-  function textoProcedimiento(estado: Procedimiento['estado']) {
-    if (estado === 'realizado') return 'Realizado'
-    if (estado === 'habilitado') return 'Puede avanzar'
-    return 'Bloqueado'
+  function summarizeClinical(record: ClinicalRecord) {
+    const fasting = record.fastingStatus === 'NOT_RECORDED' ? 'Sin registrar' : record.fastingStatus === 'YES' ? 'Sí' : record.fastingStatus === 'NO' ? 'No' : 'Dudoso'
+    const systolic = [record.systolic1, record.systolic2, record.systolic3]
+    const diastolic = [record.diastolic1, record.diastolic2, record.diastolic3]
+    const bpAverage = systolic.every((value) => value !== null) && diastolic.every((value) => value !== null)
+      ? `${Math.round((systolic as number[]).reduce((sum, value) => sum + value, 0) / 3)} / ${Math.round((diastolic as number[]).reduce((sum, value) => sum + value, 0) / 3)} mmHg`
+      : null
+    return [
+      ['Ayuno', fasting === 'Sí' && record.fastingHours !== null ? `Sí · ${record.fastingHours} h` : fasting],
+      ['Peso', clinicalValue(record.weightKg, ' kg')],
+      ['Cintura', clinicalValue(record.waistCm, ' cm')],
+      ['TA promedio', bpAverage],
+      ['Conmed revisada', clinicalValue(record.conmedReviewed)],
+      ['Cambios conmed', clinicalValue(record.conmedChanges)],
+      ['Revisión EA', clinicalValue(record.aeReviewed)],
+      ['AE activo', clinicalValue(record.hasActiveAe)],
+      ['PHQ-9', clinicalValue(record.phq9Completed)],
+      ['C-SSRS', clinicalValue(record.cssrsCompleted)],
+      ['Alerta C-SSRS', clinicalValue(record.cssrsAlert)],
+      ['Elegibilidad', record.eligibilityDecision ? ({ ELIGIBLE: 'Elegible', NOT_ELIGIBLE: 'No elegible', PENDING: 'Pendiente' }[record.eligibilityDecision]) : null],
+      ['Continuidad', record.continueStudy ? ({ YES: 'Continuar', NO: 'No continuar', PENDING: 'Pendiente' }[record.continueStudy]) : null],
+      ['Dosis', record.doseDecision],
+    ].filter((entry): entry is [string, string] => entry[1] !== null)
   }
 
-  if (visitaAbierta) {
-    return (
-      <>
-        <style>{`
-          .detalle-app {
-            min-height: 100vh;
-            background: #f4f7fb;
-            color: #14213d;
-          }
+  function clinicalAlerts(record: ClinicalRecord) {
+    const alerts: Alert[] = []
+    if (record.hasActiveAe === true) alerts.push({ key: 'clinical-ae', text: 'AE activo informado', kind: 'clinical' })
+    if (record.cssrsAlert === true) alerts.push({ key: 'clinical-cssrs', text: 'Alerta C-SSRS', kind: 'clinical' })
+    if (record.fastingStatus === 'NO') alerts.push({ key: 'clinical-fast-no', text: 'Ayuno: No', kind: 'clinical' })
+    if (record.fastingStatus === 'DOUBTFUL') alerts.push({ key: 'clinical-fast-doubt', text: 'Ayuno dudoso', kind: 'clinical' })
+    if (record.eligibilityDecision === 'PENDING') alerts.push({ key: 'clinical-eligibility', text: 'Elegibilidad pendiente', kind: 'clinical' })
+    if (record.continueStudy === 'PENDING') alerts.push({ key: 'clinical-continue', text: 'Continuidad pendiente', kind: 'clinical' })
+    return alerts
+  }
 
-          .detalle-header {
-            background: linear-gradient(90deg, #073763, #0a4f86);
-            color: white;
-            padding: 20px 32px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            gap: 20px;
-          }
+  function activityFor(procedures: VisitProcedure[]): Activity[] {
+    return procedures.flatMap((procedure) => {
+      if (procedure.status !== 'COMPLETED') return []
+      if (procedure.performedAt) return [{ id: procedure.id, at: procedure.performedAt, clinicalTime: true, text: procedure.name, by: procedure.recordedBy }]
+      const technicalTime = procedure.recordedAt ?? procedure.completedAt
+      if (technicalTime) return [{ id: procedure.id, at: technicalTime, clinicalTime: false, text: procedure.name, by: procedure.recordedBy }]
+      return []
+    }).sort((first, second) => new Date(first.at).getTime() - new Date(second.at).getTime())
+  }
 
-          .detalle-header h1 {
-            margin: 0;
-            font-size: 25px;
-          }
+  const detailAlerts = visitaAbierta
+    ? [...alertsFor(visitaAbierta, procedimientosAbiertos, registroAbierto), ...(registroAbierto ? clinicalAlerts(registroAbierto) : [])]
+    : []
+  const detailActivity = activityFor(procedimientosAbiertos)
+  return <>
+    <style>{`
+      .sc-app,.sc-app *{box-sizing:border-box}.sc-app{min-height:100vh;background:#f4f7fb;color:#14213d}.sc-header{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:17px 24px;background:linear-gradient(90deg,#073763,#0a4f86);color:white}.sc-header h1{margin:0;font-size:23px}.sc-header p{margin:4px 0 0;font-size:13px;opacity:.84}.sc-header-actions{display:flex;align-items:center;gap:8px}.sc-button{min-height:42px;padding:8px 12px;border:1px solid #ffffff55;border-radius:7px;background:#ffffff1f;color:white;cursor:pointer;font-weight:700}.sc-button:disabled{opacity:.6;cursor:wait}.sc-content{width:min(100%,1500px);margin:0 auto;padding:20px 22px 38px}.sc-indicadores{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin-bottom:17px}.sc-indicador{padding:13px;border:1px solid #e1e8ef;border-radius:8px;background:white}.sc-numero{font-size:22px;font-weight:800}.sc-label{margin-top:4px;color:#657585;font-size:12px}.sc-layout{display:grid;grid-template-columns:minmax(0,1.65fr) minmax(300px,.8fr);gap:14px;align-items:start}.sc-panel{padding:16px;border:1px solid #e0e7ef;border-radius:9px;background:white}.sc-panel h2{margin:0 0 13px;font-size:18px}.visita-card{margin-bottom:10px;padding:14px;border:1px solid #dfe6ee;border-radius:8px;background:white}.visita-top{display:flex;justify-content:space-between;align-items:flex-start;gap:15px}.visita-hora{font-size:18px;font-weight:800;color:#073763}.visita-codigo{margin-top:4px;font-size:15px;font-weight:800}.muted{margin-top:4px;color:#718096;font-size:12px}.estado{display:inline-block;padding:6px 9px;border-radius:999px;font-size:12px;font-weight:800}.estado-presente{background:#dff3ff;color:#16678f}.estado-en_curso{background:#e8ddff;color:#6240a7}.estado-esperado{background:#edf2f7;color:#526173}.estado-demorado,.estado-espera{background:#fff1df;color:#9a5a08}.estado-no_show,.estado-completado{background:#edf0f3;color:#526173}.visita-llegada{margin-top:6px;color:#526173;font-size:12px}.progress-summary{margin-top:13px}.progress-label{display:flex;justify-content:space-between;gap:10px;margin-bottom:5px;color:#536477;font-size:12px}.progress-bar{height:7px;overflow:hidden;border-radius:999px;background:#edf1f5}.progress-bar span{display:block;height:100%;background:#1187d1}.progress-counts{margin-top:6px;color:#66788a;font-size:12px}.sc-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}.sc-action{min-height:38px;padding:7px 11px;border:1px solid #d4dee7;border-radius:7px;background:white;color:#32465a;font-weight:700}.sc-action.primary{border-color:#1187d1;background:#1187d1;color:white}.sc-action:disabled{opacity:.55;cursor:not-allowed}.sc-message{padding:12px;border:1px solid #dce5ed;border-radius:8px;background:#f8fafc;color:#526173;font-size:13px}.sc-message.error{border-color:#efc2b8;background:#fff0ed;color:#843728}.sc-retry{min-height:40px;margin-top:8px;padding:7px 11px;border:1px solid #b9d7e8;border-radius:7px;background:white;color:#17658e;font-weight:700}.alert-list{display:grid;gap:8px}.alert-item{padding:9px 10px;border-left:3px solid #a9b7c5;border-radius:4px;background:#f7f9fb;color:#405261;font-size:12px;line-height:1.4}.alert-item.blocked{border-color:#b94430;background:#fff4f1}.alert-item.ready{border-color:#c18a1a;background:#fff9e9}.alert-item.clinical{border-color:#8d5a9e;background:#fbf5fc}.detail-header{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:12px}.detail-header h2{margin:0;font-size:20px}.detail-top-actions{display:flex;gap:7px}.detail-back{min-height:40px;padding:7px 11px;border:1px solid #b9d7e8;border-radius:7px;background:white;color:#17658e;font-weight:700}.detail-summary{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:1px;overflow:hidden;margin-bottom:12px;border:1px solid #dce5ed;border-radius:8px;background:#dce5ed}.detail-summary>div{min-width:0;padding:10px;background:white;overflow-wrap:anywhere}.detail-summary small{display:block;margin-bottom:4px;color:#657585;font-size:11px;font-weight:700}.detail-summary strong{font-size:13px}.detail-columns{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(280px,.8fr);gap:12px;align-items:start}.procedure-list{display:grid;gap:7px}.procedure-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;padding:10px 0;border-bottom:1px solid #edf1f4}.procedure-row:last-child{border-bottom:0}.procedure-title{font-size:13px;font-weight:800}.procedure-meta{display:flex;flex-wrap:wrap;gap:6px 10px;margin-top:5px;color:#69788b;font-size:11px}.role-tag{display:inline-flex;padding:3px 7px;border-radius:999px;background:#eef3f6;color:#40586a;font-size:10px;font-weight:800}.pstatus{display:inline-flex;height:fit-content;padding:5px 8px;border-radius:999px;background:#edf1f4;color:#526173;font-size:11px;font-weight:800;white-space:nowrap}.pstatus.ready{background:#e0f3e7;color:#17633a}.pstatus.blocked{background:#fde8e3;color:#8b3d30}.pstatus.in-progress{background:#dff3fb;color:#075f84}.pstatus.completed{background:#e9f2ed;color:#276c40}.pstatus.not-applicable{background:#f0f0f0;color:#646d75}.reason{margin-top:5px;color:#843728;font-size:11px}.clinical-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}.clinical-item{padding:8px;border-radius:6px;background:#f5f8fa;min-width:0}.clinical-item small{display:block;margin-bottom:4px;color:#657585;font-size:10px;font-weight:700}.clinical-item span{font-size:12px;font-weight:700;overflow-wrap:anywhere}.activity-list{display:grid;gap:0}.activity-item{display:grid;grid-template-columns:72px minmax(0,1fr);gap:9px;padding:9px 0;border-bottom:1px solid #edf1f4}.activity-item:last-child{border-bottom:0}.activity-time{font-weight:800;font-size:12px;color:#075b83}.activity-detail{font-size:12px}.activity-meta{margin-top:3px;color:#69788b;font-size:10px}.sc-disabled-actions{display:grid;gap:7px;margin-top:12px}.sc-disabled-actions button{min-height:38px;border:1px solid #d5dee6;border-radius:6px;background:#f6f8fa;color:#6a7885;font-weight:700}.detail-refreshing{opacity:.65}
+      @media(max-width:1050px){.sc-layout,.detail-columns{grid-template-columns:1fr}.sc-indicadores{grid-template-columns:repeat(3,minmax(0,1fr))}.detail-summary{grid-template-columns:repeat(3,minmax(0,1fr))}}
+      @media(max-width:620px){.sc-header{align-items:flex-start;flex-direction:column;padding:14px}.sc-header-actions{width:100%;justify-content:space-between}.sc-content{padding:13px 11px 28px}.sc-indicadores{grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}.sc-indicador{padding:10px}.sc-numero{font-size:19px}.visita-top{flex-direction:column}.detail-header{flex-direction:column}.detail-top-actions{width:100%}.detail-back{flex:1}.detail-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.procedure-row{grid-template-columns:minmax(0,1fr)}.pstatus{width:fit-content}.clinical-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+    `}</style>
 
-          .detalle-header p {
-            margin: 4px 0 0;
-            opacity: .8;
-          }
+    <div className="sc-app">
+      <header className="sc-header">
+        <div><h1>CEMEDIC · Study Coordinator</h1><p>Torre de control de visitas</p></div>
+        <div className="sc-header-actions">
+          <button className="sc-button" disabled={refreshing || loadingList} onClick={refreshAll}>{refreshing ? 'Actualizando...' : 'Actualizar'}</button>
+          <button className="sc-button" onClick={onVolver}>← Volver</button>
+        </div>
+      </header>
 
-          .detalle-volver {
-            background: rgba(255,255,255,.15);
-            border: 1px solid rgba(255,255,255,.35);
-            color: white;
-            border-radius: 8px;
-            padding: 9px 14px;
-            cursor: pointer;
-            font-weight: 600;
-          }
-
-          .detalle-content {
-            max-width: 1380px;
-            margin: auto;
-            padding: 28px;
-          }
-
-          .detalle-resumen {
-            background: white;
-            border: 1px solid #e2e8f0;
-            border-radius: 16px;
-            padding: 22px;
-            display: grid;
-            grid-template-columns: repeat(5, 1fr);
-            gap: 18px;
-            margin-bottom: 22px;
-          }
-
-          .dato-label {
-            font-size: 12px;
-            color: #718096;
-            text-transform: uppercase;
-            letter-spacing: .4px;
-          }
-
-          .dato-valor {
-            margin-top: 5px;
-            font-size: 17px;
-            font-weight: 700;
-          }
-
-          .detalle-layout {
-            display: grid;
-            grid-template-columns: minmax(0, 2fr) 360px;
-            gap: 22px;
-          }
-
-          .detalle-panel {
-            background: white;
-            border: 1px solid #e2e8f0;
-            border-radius: 16px;
-            padding: 22px;
-          }
-
-          .detalle-panel h2 {
-            margin: 0 0 18px;
-            font-size: 21px;
-          }
-
-          .procedimiento {
-            display: grid;
-            grid-template-columns: minmax(0, 1.4fr) 160px 130px;
-            gap: 14px;
-            align-items: center;
-            padding: 15px 0;
-            border-bottom: 1px solid #edf0f4;
-          }
-
-          .procedimiento:last-child {
-            border-bottom: none;
-          }
-
-          .proc-nombre {
-            font-weight: 700;
-          }
-
-          .proc-responsable {
-            color: #6b7b8d;
-            font-size: 14px;
-            margin-top: 4px;
-          }
-
-          .proc-estado {
-            display: inline-block;
-            border-radius: 999px;
-            padding: 7px 10px;
-            font-size: 12px;
-            font-weight: 700;
-            text-align: center;
-          }
-
-          .proc-realizado {
-            background: #e5f5eb;
-            color: #237a49;
-          }
-
-          .proc-habilitado {
-            background: #dff3ff;
-            color: #16678f;
-          }
-
-          .proc-bloqueado {
-            background: #fff1df;
-            color: #9a5a08;
-          }
-
-          .proc-hora {
-            color: #627286;
-            font-size: 14px;
-          }
-
-          .motivo {
-            margin-top: 5px;
-            color: #9a5a08;
-            font-size: 12px;
-            font-weight: 500;
-          }
-
-          .side-block {
-            padding: 14px 0;
-            border-bottom: 1px solid #edf0f4;
-          }
-
-          .side-block:last-child {
-            border-bottom: none;
-          }
-
-          .side-title {
-            font-weight: 700;
-            margin-bottom: 6px;
-          }
-
-          .side-text {
-            color: #627286;
-            font-size: 14px;
-            line-height: 1.45;
-          }
-
-          .boton-secundario {
-            width: 100%;
-            margin-top: 12px;
-            border: 1px solid #d6dee8;
-            background: white;
-            border-radius: 8px;
-            padding: 10px 12px;
-            cursor: pointer;
-            font-weight: 600;
-            color: #32465a;
-          }
-
-          .boton-secundario:disabled {
-            cursor: not-allowed;
-            opacity: .58;
-          }
-
-          .nota-plantilla {
-            margin: -4px 0 16px;
-            color: #69788b;
-            font-size: 13px;
-            line-height: 1.45;
-          }
-
-          @media (max-width: 1000px) {
-            .detalle-resumen {
-              grid-template-columns: repeat(2, 1fr);
-            }
-
-            .detalle-layout {
-              grid-template-columns: 1fr;
-            }
-          }
-
-          @media (max-width: 650px) {
-            .detalle-content {
-              padding: 15px;
-            }
-
-            .procedimiento {
-              grid-template-columns: 1fr;
-            }
-          }
-        `}</style>
-
-        <div className="detalle-app">
-          <header className="detalle-header">
-            <div>
-              <h1>
-                {visitaAbierta.participant.code} · {visitaAbierta.participant.studyCode} · {visitaAbierta.visitCode}
-              </h1>
-              <p>Control operativo de visita</p>
+      <main className="sc-content">
+        {visitaAbierta ? (
+          <>
+            <div className="detail-header">
+              <div><h2>{visitaAbierta.participant.code} · {visitaAbierta.participant.studyCode} · {visitaAbierta.visitCode}</h2><span className="muted">Detalle operativo persistente</span></div>
+              <div className="detail-top-actions"><button className="detail-back" disabled={refreshing} onClick={refreshAll}>{refreshing ? 'Actualizando...' : 'Actualizar'}</button><button className="detail-back" onClick={closeVisit}>← Volver al flujo</button></div>
             </div>
 
-            <button
-              className="detalle-volver"
-              onClick={() => setVisitaAbierta(null)}
-            >
-              ← Volver al flujo
-            </button>
-          </header>
+            {detailError && <div className="sc-message error">No se pudo cargar el estado operativo de la visita<button className="sc-retry" onClick={refreshAll}>Reintentar</button></div>}
+            {loadingDetail && <div className="sc-message">Cargando estado operativo...</div>}
 
-          <main className="detalle-content">
-            <section className="detalle-resumen">
-              <div>
-                <div className="dato-label">Hora</div>
-                <div className="dato-valor">{visitaAbierta.scheduledTime.slice(0, 5)}</div>
-              </div>
-
-              <div>
-                <div className="dato-label">Médico</div>
-                <div className="dato-valor">{visitaAbierta.assignedDoctor}</div>
-              </div>
-
-              <div>
-                <div className="dato-label">Consultorio</div>
-                <div className="dato-valor">{visitaAbierta.room ?? 'Sin asignar'}</div>
-              </div>
-
-              <div>
-                <div className="dato-label">Estado</div>
-                <div className="dato-valor">
-                  {estadoVisita(visitaAbierta).text}
-                </div>
-              </div>
-
-              <div>
-                <div className="dato-label">Llegada</div>
-                <div className="dato-valor">
-                  {visitaAbierta.arrivalAt
-                    ? new Date(visitaAbierta.arrivalAt).toLocaleTimeString('es-AR', {
-                        hour: '2-digit',
-                        minute: '2-digit',
-                        hour12: false,
-                      })
-                    : 'Sin registrar'}
-                </div>
-              </div>
-            </section>
-
-            <div className="detalle-layout">
-              <section className="detalle-panel">
-                <h2>Procedimientos GZVA · {visitaAbierta.visitCode}</h2>
-                <p className="nota-plantilla">
-                  Plantilla protocolaria. El estado de los procedimientos se conectará al registro operativo en la siguiente etapa.
-                </p>
-
-                {procedimientosActuales.map((procedimiento) => (
-                  <div
-                    className="procedimiento"
-                    key={procedimiento.nombre}
-                  >
-                    <div>
-                      <div className="proc-nombre">
-                        {procedimiento.nombre}
-                      </div>
-
-                      <div className="proc-responsable">
-                        Responsable: {procedimiento.responsable}
-                      </div>
-
-                      {procedimiento.motivo && (
-                        <div className="motivo">
-                          {procedimiento.motivo}
-                        </div>
-                      )}
-                    </div>
-
-                    <div>
-                      <span
-                        className={`proc-estado ${claseProcedimiento(
-                          procedimiento.estado
-                        )}`}
-                      >
-                        {textoProcedimiento(procedimiento.estado)}
-                      </span>
-                    </div>
-
-                    <div className="proc-hora">
-                      {procedimiento.hora
-                        ? `Hora: ${procedimiento.hora}`
-                        : 'Sin registrar'}
-                    </div>
-                  </div>
-                ))}
-                {procedimientosActuales.length === 0 && (
-                  <p className="nota-plantilla">No hay plantilla protocolaria configurada para esta visita.</p>
-                )}
+            {!loadingDetail && !detailError && <>
+              <section className="detail-summary">
+                <div><small>Hora</small><strong>{visitaAbierta.scheduledTime.slice(0,5)}</strong></div>
+                <div><small>Llegada</small><strong>{timeLabel(visitaAbierta.arrivalAt)}</strong></div>
+                <div><small>Médico</small><strong>{visitaAbierta.assignedDoctor}</strong></div>
+                <div><small>Consultorio</small><strong>{visitaAbierta.room ?? 'Sin asignar'}</strong></div>
+                <div><small>Estado</small><strong>{statusName(visitaAbierta.status)}</strong></div>
               </section>
 
-              <aside className="detalle-panel">
-                <h2>Control SC</h2>
+              <div className="detail-columns">
+                <section className="sc-panel">
+                  <h2>Procedimientos persistentes</h2>
+                  {procedimientosAbiertos.length === 0 ? <div className="sc-message">Esta visita no tiene procedimientos persistidos.</div> : <div className="procedure-list">{procedimientosAbiertos.map((procedure) => (
+                        <article className="procedure-row" key={procedure.id}>
+                          <div>
+                            <div className="procedure-title">{procedure.name}</div>
+                            {procedure.status === 'BLOCKED' && procedure.blockedReason && <div className="reason">{procedure.blockedReason}</div>}
+                            <div className="procedure-meta">
+                              <span className={`role-tag ${procedureRoleClass(procedure.responsibleRole)}`}>{roleName(procedure.responsibleRole)}</span>
+                              {procedure.timeCaptureMode !== 'NONE' && procedure.performedAt && <span>Hora clínica: {timeLabel(procedure.performedAt)}</span>}
+                              {procedure.recordedBy && <span>Registrado por: {procedure.recordedBy}</span>}
+                            </div>
+                          </div>
+                          <span className={`pstatus ${procedure.status.toLowerCase().replace('_','-')}`}>{procedureStatusName(procedure.status)}</span>
+                          {procedure.responsibleRole === 'STUDY_COORDINATOR' && procedure.status === 'READY' && <button className="sc-action" disabled title="Próximamente">Gestionar próximamente</button>}
+                        </article>
+                      ))}</div>}
+                </section>
 
-                <div className="side-block">
-                  <div className="side-title">Registro operativo</div>
-                  <div className="side-text">
-                    Las acciones de coordinación todavía no están conectadas a registros persistentes.
-                  </div>
-                </div>
+                <aside style={{ display: 'grid', gap: 12, alignContent: 'start' }}>
+                  <section className="sc-panel">
+                    <h2>Resumen clínico operativo</h2>
+                    {!registroAbierto ? <div className="sc-message">Sin registrar</div> : <div className="clinical-grid">
+                      {summarizeClinical(registroAbierto).map(([label, value]) => <div className="clinical-item" key={label}><small>{label}</small><span>{value}</span></div>)}
+                    </div>}
+                    {registroAbierto && <div className="activity-meta" style={{ marginTop: 9 }}>Registro actualizado {new Date(registroAbierto.updatedAt).toLocaleString('es-AR')}</div>}
+                  </section>
 
-                <div className="side-block">
-                  <div className="side-title">Visita en PostgreSQL</div>
-                  <div className="side-text">
-                    {visitaAbierta.status}
-                  </div>
-                </div>
+                  <section className="sc-panel">
+                    <h2>Alertas operativas</h2>
+                    {detailAlerts.length === 0 ? <div className="sc-message">Sin alertas operativas registradas.</div> : <div className="alert-list">{detailAlerts.map((alert) => <div className={`alert-item ${alert.kind}`} key={alert.key}>{alert.text}</div>)}</div>}
+                  </section>
 
-                <button className="boton-secundario" disabled title="Próximamente">
-                  Reasignar médico · Próximamente
-                </button>
-
-                <button className="boton-secundario" disabled title="Próximamente">
-                  Editar consultorio · Próximamente
-                </button>
-
-                <button className="boton-secundario" disabled title="Próximamente">
-                  Registrar incidencia · Próximamente
-                </button>
-              </aside>
-            </div>
-          </main>
-        </div>
-      </>
-    )
-  }
-
-  return (
-    <>
-      <style>{`
-        .sc-app {
-          min-height: 100vh;
-          background: #f4f7fb;
-          color: #14213d;
-        }
-
-        .sc-header {
-          background: linear-gradient(90deg, #073763, #0a4f86);
-          color: white;
-          padding: 20px 32px;
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-        }
-
-        .sc-header h1 {
-          margin: 0;
-          font-size: 25px;
-        }
-
-        .sc-header p {
-          margin: 4px 0 0;
-          opacity: .8;
-        }
-
-        .sc-header-right {
-          display: flex;
-          align-items: center;
-          gap: 18px;
-        }
-
-        .sc-volver {
-          background: rgba(255,255,255,.15);
-          border: 1px solid rgba(255,255,255,.35);
-          color: white;
-          border-radius: 8px;
-          padding: 9px 14px;
-          cursor: pointer;
-          font-weight: 600;
-        }
-
-        .sc-content {
-          max-width: 1450px;
-          margin: auto;
-          padding: 28px;
-        }
-
-        .sc-indicadores {
-          display: grid;
-          grid-template-columns: repeat(4, 1fr);
-          gap: 16px;
-          margin-bottom: 24px;
-        }
-
-        .sc-indicador {
-          background: white;
-          border: 1px solid #e2e8f0;
-          border-radius: 14px;
-          padding: 18px 20px;
-        }
-
-        .sc-numero {
-          font-size: 28px;
-          font-weight: 700;
-        }
-
-        .sc-label {
-          color: #6f7f91;
-          margin-top: 4px;
-        }
-
-        .sc-layout {
-          display: grid;
-          grid-template-columns: minmax(0, 2.2fr) 360px;
-          gap: 22px;
-        }
-
-        .sc-panel {
-          background: white;
-          border: 1px solid #e2e8f0;
-          border-radius: 16px;
-          padding: 22px;
-        }
-
-        .sc-panel h2 {
-          margin: 0 0 18px;
-          font-size: 21px;
-        }
-
-        .visita-card {
-          border: 1px solid #dfe6ee;
-          border-radius: 14px;
-          padding: 18px;
-          margin-bottom: 16px;
-        }
-
-        .visita-top {
-          display: flex;
-          justify-content: space-between;
-          align-items: flex-start;
-          gap: 20px;
-        }
-
-        .visita-hora {
-          font-size: 20px;
-          font-weight: 700;
-        }
-
-        .visita-codigo {
-          font-size: 18px;
-          font-weight: 700;
-          margin-top: 4px;
-        }
-
-        .muted {
-          color: #718096;
-          font-size: 14px;
-          margin-top: 4px;
-        }
-
-        .estado {
-          display: inline-block;
-          padding: 7px 11px;
-          border-radius: 999px;
-          font-weight: 600;
-          font-size: 13px;
-        }
-
-        .estado-presente {
-          background: #dff3ff;
-          color: #16678f;
-        }
-
-        .estado-en_curso {
-          background: #e8ddff;
-          color: #6240a7;
-        }
-
-        .estado-esperado {
-          background: #edf2f7;
-          color: #526173;
-        }
-
-        .estado-demorado,
-        .estado-espera {
-          background: #fff1df;
-          color: #9a5a08;
-        }
-
-        .estado-no_show,
-        .estado-completado {
-          background: #edf0f3;
-          color: #526173;
-        }
-
-        .visita-llegada {
-          margin-top: 7px;
-          color: #526173;
-          font-size: 13px;
-        }
-
-        .sc-mensaje {
-          padding: 12px 14px;
-          border-radius: 8px;
-          margin: 12px 0;
-          color: #526173;
-          background: #f4f7fb;
-          border: 1px solid #e2e8f0;
-        }
-
-        .sc-mensaje.error {
-          background: #fff0ed;
-          color: #843728;
-          border-color: #efc2b8;
-        }
-
-        .sc-retry {
-          margin-top: 9px;
-          padding: 8px 12px;
-          border: 1px solid #b9d7e8;
-          border-radius: 7px;
-          background: white;
-          color: #17658e;
-          cursor: pointer;
-          font-weight: 600;
-        }
-
-        .boton:disabled {
-          cursor: not-allowed;
-          opacity: .58;
-        }
-
-        .progreso-wrap {
-          margin-top: 16px;
-        }
-
-        .progreso-info {
-          display: flex;
-          justify-content: space-between;
-          font-size: 13px;
-          color: #66788a;
-          margin-bottom: 6px;
-        }
-
-        .progreso {
-          height: 8px;
-          background: #edf1f5;
-          border-radius: 999px;
-          overflow: hidden;
-        }
-
-        .progreso-barra {
-          height: 100%;
-          background: #1187d1;
-          border-radius: 999px;
-        }
-
-        .acciones {
-          display: grid;
-          grid-template-columns: 1fr 1fr;
-          gap: 14px;
-          margin-top: 17px;
-        }
-
-        .bloque {
-          border-radius: 10px;
-          padding: 13px;
-          background: #f8fafc;
-          border: 1px solid #e6ebf1;
-        }
-
-        .bloque-titulo {
-          font-weight: 700;
-          margin-bottom: 8px;
-          font-size: 14px;
-        }
-
-        .item {
-          font-size: 13px;
-          margin: 6px 0;
-          color: #536477;
-        }
-
-        .habilitado {
-          color: #1d7a48;
-        }
-
-        .botones {
-          display: flex;
-          gap: 9px;
-          margin-top: 16px;
-          flex-wrap: wrap;
-        }
-
-        .boton {
-          border: 1px solid #d6dee8;
-          background: white;
-          border-radius: 8px;
-          padding: 9px 12px;
-          cursor: pointer;
-          font-weight: 600;
-          color: #32465a;
-        }
-
-        .boton-principal {
-          background: #1187d1;
-          color: white;
-          border-color: #1187d1;
-        }
-
-        .alerta {
-          border-bottom: 1px solid #edf0f4;
-          padding: 14px 0;
-        }
-
-        .alerta:last-child {
-          border-bottom: none;
-        }
-
-        .alerta-titulo {
-          font-size: 13px;
-          font-weight: 700;
-          margin-bottom: 4px;
-        }
-
-        .alerta-texto {
-          font-size: 14px;
-          line-height: 1.4;
-          color: #56687a;
-        }
-
-        .espera {
-          color: #b26600;
-        }
-
-        .protocolo {
-          color: #b03a2e;
-        }
-
-        .pendiente {
-          color: #6b56a5;
-        }
-
-        @media (max-width: 1000px) {
-          .sc-layout {
-            grid-template-columns: 1fr;
-          }
-
-          .sc-indicadores {
-            grid-template-columns: repeat(2, 1fr);
-          }
-        }
-
-        @media (max-width: 650px) {
-          .sc-content {
-            padding: 15px;
-          }
-
-          .sc-header {
-            padding: 16px;
-          }
-
-          .acciones {
-            grid-template-columns: 1fr;
-          }
-        }
-      `}</style>
-
-      <div className="sc-app">
-        <header className="sc-header">
-          <div>
-            <h1>CEMEDIC · Study Coordinator</h1>
-            <p>Torre de control de visitas</p>
-          </div>
-
-          <div className="sc-header-right">
-            <div>
-              {new Date().toLocaleDateString('es-AR')}
-            </div>
-
-            <button
-              className="sc-volver"
-              onClick={onVolver}
-            >
-              ← Volver
-            </button>
-          </div>
-        </header>
-
-        <main className="sc-content">
-          <div className="sc-indicadores">
-            <div className="sc-indicador">
-              <div className="sc-numero">
-                {visitas.length}
+                  <section className="sc-panel">
+                    <h2>Actividad registrada</h2>
+                    {detailActivity.length === 0 ? <div className="sc-message">Sin procedimientos completados con fecha disponible.</div> : <div className="activity-list">{detailActivity.map((activity) => <div className="activity-item" key={activity.id}><div className="activity-time">{timeLabel(activity.at)}</div><div><div className="activity-detail">{activity.text}</div><div className="activity-meta">{activity.clinicalTime ? 'Hora clínica' : `Registrado a las ${timeLabel(activity.at)}`}{activity.by ? ` · ${activity.by}` : ''}</div></div></div>)}</div>}
+                  </section>
+                  <div className="sc-disabled-actions"><button disabled>Reasignar médico · Próximamente</button><button disabled>Editar consultorio · Próximamente</button><button disabled>Registrar incidencia · Próximamente</button></div>
+                </aside>
               </div>
-              <div className="sc-label">
-                Visitas hoy
-              </div>
+            </>}
+          </>
+        ) : (
+          <>
+            <div className="sc-indicadores">
+              <div className="sc-indicador"><div className="sc-numero">{data.length}</div><div className="sc-label">Visitas hoy</div></div>
+              <div className="sc-indicador"><div className="sc-numero">{presenteCount}</div><div className="sc-label">Presentes</div></div>
+              <div className="sc-indicador"><div className="sc-numero">{inProgressCount}</div><div className="sc-label">En atención</div></div>
+              <div className="sc-indicador"><div className="sc-numero">{visitsWithAlerts}</div><div className="sc-label">Visitas con alertas</div></div>
+              <div className="sc-indicador"><div className="sc-numero">{blockedCount}</div><div className="sc-label">Procedimientos bloqueados</div></div>
             </div>
-
-            <div className="sc-indicador">
-              <div className="sc-numero">{visitasPresentes}</div>
-              <div className="sc-label">
-                Presentes
-              </div>
-            </div>
-
-            <div className="sc-indicador">
-              <div className="sc-numero">{visitasEnCurso}</div>
-              <div className="sc-label">
-                En curso
-              </div>
-            </div>
-
-            <div className="sc-indicador">
-              <div className="sc-numero">
-                {alertas.length}
-              </div>
-              <div className="sc-label">
-                Alertas
-              </div>
-            </div>
-          </div>
-
-          <div className="sc-layout">
-            <section className="sc-panel">
-              <h2>Flujo de hoy</h2>
-
-              {cargando && <div className="sc-mensaje" aria-live="polite">Cargando flujo del día...</div>}
-
-              {!cargando && errorCarga && (
-                <div className="sc-mensaje error" role="alert">
-                  No se pudo conectar con el servidor local
-                  <br />
-                  <button className="sc-retry" onClick={() => setReintento((value) => value + 1)}>
-                    Reintentar
-                  </button>
-                </div>
-              )}
-
-              {!cargando && !errorCarga && visitas.length === 0 && (
-                <div className="sc-mensaje">No hay visitas para hoy.</div>
-              )}
-
-              {!cargando && !errorCarga && visitas.map((visita) => {
-                const estado = estadoVisita(visita)
-                return (
-                <div
-                  className="visita-card"
-                  key={visita.id}
-                >
-                  <div className="visita-top">
-                    <div>
-                      <div className="visita-hora">
-                        {visita.scheduledTime.slice(0, 5)}
-                      </div>
-
-                      <div className="visita-codigo">
-                        {visita.participant.code}
-                      </div>
-
-                      <div className="muted">
-                        {visita.participant.studyCode} · {visita.visitCode}
-                      </div>
-
-                      <div className="muted">
-                        {visita.assignedDoctor} · {visita.room ?? 'Consultorio sin asignar'}
-                      </div>
-
-                      {visita.arrivalAt && (
-                        <div className="visita-llegada">
-                          Llegó {new Date(visita.arrivalAt).toLocaleTimeString('es-AR', {
-                            hour: '2-digit',
-                            minute: '2-digit',
-                            hour12: false,
-                          })}
-                        </div>
-                      )}
+            <div className="sc-layout">
+              <section className="sc-panel">
+                <h2>Flujo de hoy</h2>
+                {loadingList && <div className="sc-message">Cargando flujo del día...</div>}
+                {!loadingList && listError && <div className="sc-message error">No se pudo cargar el estado operativo de la visita<button className="sc-retry" onClick={refreshAll}>Reintentar</button></div>}
+                {!loadingList && !listError && data.length === 0 && <div className="sc-message">No hay visitas para hoy.</div>}
+                {!loadingList && !listError && data.map(({ visit, procedures }) => {
+                  const state = visitStatusView(visit, now)
+                  const counts = procedureCounts(procedures)
+                  const alerts = alertsByVisit.get(visit.id) ?? []
+                  const percent = counts.total ? Math.round((counts.completed / counts.total) * 100) : 0
+                  return <article className="visita-card" key={visit.id}>
+                    <div className="visita-top"><div>
+                      <div className="visita-hora">{visit.scheduledTime.slice(0,5)}</div>
+                      <div className="visita-codigo">{visit.participant.code}</div>
+                      <div className="muted">{visit.participant.studyCode} · {visit.visitCode}</div>
+                      <div className="muted">{visit.assignedDoctor} · {visit.room ?? 'Consultorio sin asignar'}</div>
+                      {visit.arrivalAt && <div className="visita-llegada">Llegó {timeLabel(visit.arrivalAt)}</div>}
+                    </div><span className={`estado ${state.className}`}>{state.text}</span></div>
+                    <div className="progress-summary">
+                      <div className="progress-label"><span>Procedimientos</span><span>{counts.completed} completados · {counts.ready} listos · {counts.blocked} bloqueados · {counts.pending} pendientes{counts.inProgress ? ` · ${counts.inProgress} en curso` : ''}</span></div>
+                      <div className="progress-bar"><span style={{ width: `${percent}%` }} /></div>
                     </div>
-
-                    <span
-                      className={`estado ${estado.className}`}
-                    >
-                      {estado.text}
-                    </span>
-                  </div>
-
-                  <div className="botones">
-                    <button
-                      className="boton boton-principal"
-                      onClick={() => setVisitaAbierta(visita)}
-                    >
-                      Abrir visita
-                    </button>
-
-                    <button className="boton" disabled title="Próximamente">
-                      Solicitar médico · Próximamente
-                    </button>
-
-                    <button className="boton" disabled title="Próximamente">
-                      Solicitar laboratorio · Próximamente
-                    </button>
-                  </div>
-                </div>
-                )
-              })}
-            </section>
-
-            <aside className="sc-panel">
-              <h2>Alertas</h2>
-
-              {!cargando && !errorCarga && alertas.length === 0 && (
-                <div className="alerta-texto">Sin alertas por demora o espera prolongada.</div>
-              )}
-
-              {!cargando && !errorCarga && alertas.map((alerta) => (
-                <div className="alerta" key={alerta.texto}>
-                  <div className="alerta-titulo espera">ESPERA</div>
-                  <div className="alerta-texto">{alerta.texto}</div>
-                </div>
-              ))}
-
-              {cargando && <div className="alerta-texto">Cargando alertas...</div>}
-              {errorCarga && <div className="alerta-texto">Alertas no disponibles.</div>}
-            </aside>
-          </div>
-        </main>
-      </div>
-    </>
-  )
+                    <div className="sc-actions"><button className="sc-action primary" onClick={() => openVisit(visit)}>Abrir visita</button><button className="sc-action" disabled title="Próximamente">Solicitar médico · Próximamente</button><button className="sc-action" disabled title="Próximamente">Solicitar laboratorio · Próximamente</button></div>
+                    {alerts.length > 0 && <div className="alert-list" style={{ marginTop: 10 }}>{alerts.slice(0,3).map((alert) => <div className={`alert-item ${alert.kind}`} key={alert.key}>{alert.text}</div>)}</div>}
+                  </article>
+                })}
+              </section>
+              <aside className="sc-panel"><h2>Alertas operativas</h2>{loadingList && <div className="sc-message">Cargando alertas...</div>}{!loadingList && !listError && alertsCount === 0 && <div className="sc-message">Sin alertas operativas.</div>}{!loadingList && !listError && <div className="alert-list">{data.flatMap(({ visit, procedures, record }) => alertsFor(visit, procedures, record).map((alert) => <div className={`alert-item ${alert.kind}`} key={`${visit.id}-${alert.key}`}><strong>{visit.participant.code} · {visit.visitCode}</strong><br />{alert.text}</div>))}</div>}{listError && <div className="sc-message error">Alertas no disponibles.</div>}</aside>
+            </div>
+          </>
+        )}
+      </main>
+    </div>
+  </>
 }
