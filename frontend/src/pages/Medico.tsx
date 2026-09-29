@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { API_BASE_URL } from '../config/api'
 
 type EstadoEvento =
   | 'Sin EA nuevos'
@@ -8,61 +9,33 @@ type EstadoEvento =
   | 'SAE'
   | 'AESI'
 
-type PacienteMedico = {
-  codigo: string
-  estudio: string
-  visita: string
-  horaLlegada: string
-  medico: string
-  consultorio: string
-  estado: string
-  reasignado?: boolean
-  medicoOriginal?: string
-  pendienteEA: boolean
-  aleatorizado: boolean
+type Participant = {
+  id: string
+  code: string
+  studyCode: string
+}
+
+type VisitStatus = 'SCHEDULED' | 'PRESENT' | 'IN_PROGRESS' | 'NO_SHOW' | 'COMPLETED'
+
+type Visit = {
+  id: string
+  participant: Participant
+  visitCode: string
+  scheduledDate: string
+  scheduledTime: string
+  assignedDoctor: string
+  room: string | null
+  status: VisitStatus
+  arrivalAt: string | null
+  startedAt: string | null
+  completedAt: string | null
 }
 
 type MedicoProps = {
   onVolver: () => void
 }
 
-const pacientesMock: PacienteMedico[] = [
-  {
-    codigo: 'ARG005-001',
-    estudio: 'GZVA',
-    visita: 'V3',
-    horaLlegada: '08:04',
-    medico: 'Dr. Puleio',
-    consultorio: 'Consultorio 2',
-    estado: 'Esperando médico',
-    pendienteEA: true,
-    aleatorizado: true,
-  },
-  {
-    codigo: 'ARG005-008',
-    estudio: 'GZVA',
-    visita: 'V5',
-    horaLlegada: '09:20',
-    medico: 'Dr. Puleio',
-    consultorio: 'Consultorio 1',
-    estado: 'En evaluación',
-    pendienteEA: false,
-    aleatorizado: true,
-  },
-  {
-    codigo: 'ARG005-014',
-    estudio: 'GZVA',
-    visita: 'V7',
-    horaLlegada: '10:10',
-    medico: 'Dr. Puleio',
-    consultorio: 'Consultorio 3',
-    estado: 'Esperando médico',
-    reasignado: true,
-    medicoOriginal: 'Dr. Pérez',
-    pendienteEA: false,
-    aleatorizado: true,
-  },
-].sort((a, b) => a.horaLlegada.localeCompare(b.horaLlegada))
+const CURRENT_DOCTOR = 'Dr. Puleio'
 
 const estadosEvento: EstadoEvento[] = [
   'Sin EA nuevos',
@@ -74,22 +47,98 @@ const estadosEvento: EstadoEvento[] = [
 ]
 
 export default function Medico({ onVolver }: MedicoProps) {
-  const [pacienteActivo, setPacienteActivo] = useState<PacienteMedico | null>(null)
+  const [visitas, setVisitas] = useState<Visit[]>([])
+  const [visitaActiva, setVisitaActiva] = useState<Visit | null>(null)
+  const [cargando, setCargando] = useState(true)
+  const [errorCarga, setErrorCarga] = useState(false)
+  const [reintento, setReintento] = useState(0)
+  const [ahora, setAhora] = useState(() => Date.now())
   const [estadoEvento, setEstadoEvento] = useState<EstadoEvento | ''>('')
 
-  function abrirEvaluacion(paciente: PacienteMedico) {
-    setPacienteActivo(paciente)
+  useEffect(() => {
+    const controller = new AbortController()
+    const currentDate = new Date()
+    const year = currentDate.getFullYear()
+    const month = String(currentDate.getMonth() + 1).padStart(2, '0')
+    const day = String(currentDate.getDate()).padStart(2, '0')
+    const params = new URLSearchParams({
+      date: `${year}-${month}-${day}`,
+      doctor: CURRENT_DOCTOR,
+    })
+
+    async function cargarCola() {
+      setCargando(true)
+      setErrorCarga(false)
+
+      try {
+        if (!API_BASE_URL) throw new Error('API URL no configurada')
+
+        const response = await fetch(`${API_BASE_URL}/visits?${params}`, {
+          signal: controller.signal,
+        })
+        if (!response.ok) throw new Error('No se pudo cargar mi cola')
+
+        const data = (await response.json()) as Visit[]
+        setVisitas(data)
+      } catch {
+        if (!controller.signal.aborted) setErrorCarga(true)
+      } finally {
+        if (!controller.signal.aborted) setCargando(false)
+      }
+    }
+
+    void cargarCola()
+    return () => controller.abort()
+  }, [reintento])
+
+  useEffect(() => {
+    const intervalId = window.setInterval(() => setAhora(Date.now()), 60_000)
+    return () => window.clearInterval(intervalId)
+  }, [])
+
+  const visitasCola = visitas
+    .filter((visita) => visita.status === 'PRESENT' || visita.status === 'IN_PROGRESS')
+    .sort((first, second) => {
+      const firstArrival = first.arrivalAt ? new Date(first.arrivalAt).getTime() : null
+      const secondArrival = second.arrivalAt ? new Date(second.arrivalAt).getTime() : null
+      const firstOrder = firstArrival ?? new Date(`${first.scheduledDate}T${first.scheduledTime}`).getTime()
+      const secondOrder = secondArrival ?? new Date(`${second.scheduledDate}T${second.scheduledTime}`).getTime()
+      return firstOrder - secondOrder
+    })
+
+  function minutosEspera(visita: Visit) {
+    if (!visita.arrivalAt) return null
+    return Math.max(0, Math.floor((ahora - new Date(visita.arrivalAt).getTime()) / 60_000))
+  }
+
+  function horaLocal(timestamp: string | null) {
+    if (!timestamp) return 'Sin registrar'
+    return new Date(timestamp).toLocaleTimeString('es-AR', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    })
+  }
+
+  function estadoVisita(visita: Visit) {
+    return visita.status === 'PRESENT' ? 'Esperando médico' : 'En evaluación'
+  }
+
+  function abrirEvaluacion(visita: Visit) {
+    setVisitaActiva(visita)
     setEstadoEvento('')
   }
 
   function volverACola() {
-    setPacienteActivo(null)
+    setVisitaActiva(null)
     setEstadoEvento('')
   }
 
-  const advertenciaEA = Boolean(
-    pacienteActivo?.pendienteEA && !estadoEvento
-  )
+  const pacientesEnEspera = visitasCola.filter((visita) => visita.status === 'PRESENT').length
+  const pacientesEnEvaluacion = visitasCola.filter((visita) => visita.status === 'IN_PROGRESS').length
+  const esperaProlongada = visitasCola.filter(
+    (visita) => visita.status === 'PRESENT' && (minutosEspera(visita) ?? 0) > 30,
+  ).length
 
   return (
     <>
@@ -159,6 +208,33 @@ export default function Medico({ onVolver }: MedicoProps) {
           font-size: 14px;
         }
 
+        .medico-demo-note {
+          margin-bottom: 16px;
+          padding: 11px 13px;
+          border: 1px solid #d7e4ed;
+          border-left: 4px solid #4b8eae;
+          border-radius: 7px;
+          background: #f2f8fb;
+          color: #40596a;
+          font-size: 13px;
+          line-height: 1.45;
+        }
+
+        .medico-load-error {
+          padding: 13px 15px;
+          border: 1px solid #efc2b8;
+          border-radius: 8px;
+          background: #fff0ed;
+          color: #843728;
+        }
+
+        .medico-wait-alert {
+          margin-top: 6px;
+          color: #a15300;
+          font-size: 12px;
+          font-weight: 700;
+        }
+
         .medico-queue {
           display: grid;
           gap: 12px;
@@ -205,10 +281,7 @@ export default function Medico({ onVolver }: MedicoProps) {
         }
 
         .medico-badge.reasignado {
-          display: block;
-          margin-top: 7px;
-          background: #fff0d5;
-          color: #865500;
+          display: none;
         }
 
         .medico-button {
@@ -487,6 +560,7 @@ export default function Medico({ onVolver }: MedicoProps) {
           <div>
             <h1>CEMEDIC · Médico</h1>
             <p>Pacientes en espera y evaluación clínica</p>
+            <p>Médico actual: {CURRENT_DOCTOR}</p>
           </div>
           <button className="medico-volver" onClick={onVolver}>
             ← Volver
@@ -494,49 +568,70 @@ export default function Medico({ onVolver }: MedicoProps) {
         </header>
 
         <main className="medico-content">
-          {!pacienteActivo ? (
+          {!visitaActiva ? (
             <>
+              <div className="medico-metrics">
+                <div className="medico-metric"><span className="medico-label">Pacientes en espera</span><strong>{pacientesEnEspera}</strong></div>
+                <div className="medico-metric"><span className="medico-label">En evaluación</span><strong>{pacientesEnEvaluacion}</strong></div>
+                <div className="medico-metric"><span className="medico-label">Espera &gt;30 min</span><strong>{esperaProlongada}</strong></div>
+              </div>
+
               <div className="medico-title-row">
                 <div>
                   <h2>Mi cola</h2>
                   <div className="medico-muted">
-                    {pacientesMock.length} pacientes asignados · ordenados por llegada
+                    {visitasCola.length} pacientes asignados · ordenados por llegada
                   </div>
                 </div>
-                <span className="medico-badge">Dr. Puleio</span>
+                <span className="medico-badge">{CURRENT_DOCTOR}</span>
               </div>
 
               <section className="medico-queue" aria-label="Pacientes asignados">
-                {pacientesMock.map((paciente) => (
-                  <article className="medico-patient" key={paciente.codigo}>
-                    <div className="medico-time">{paciente.horaLlegada}</div>
+                {cargando && <div className="medico-panel" aria-live="polite">Cargando mi cola...</div>}
+                {!cargando && errorCarga && (
+                  <div className="medico-load-error" role="alert">
+                    No se pudo conectar con el servidor local
                     <div>
-                      <div className="medico-code">
-                        {paciente.codigo} · {paciente.estudio} · {paciente.visita}
-                      </div>
-                      {paciente.reasignado && (
-                        <span className="medico-badge reasignado">
-                          Reasignado desde {paciente.medicoOriginal}; llegada original conservada
-                        </span>
-                      )}
-                    </div>
-                    <div>
-                      <div>{paciente.medico}</div>
-                      <div className="medico-detail">{paciente.consultorio}</div>
-                    </div>
-                    <div>
-                      <span className="medico-badge">{paciente.estado}</span>
-                    </div>
-                    <div className="medico-action-cell">
-                      <button
-                        className="medico-button"
-                        onClick={() => abrirEvaluacion(paciente)}
-                      >
-                        Abrir evaluación
+                      <button className="medico-button secondary" onClick={() => setReintento((value) => value + 1)}>
+                        Reintentar
                       </button>
                     </div>
-                  </article>
-                ))}
+                  </div>
+                )}
+                {!cargando && !errorCarga && visitasCola.length === 0 && (
+                  <div className="medico-panel">No hay pacientes esperando atención en este momento.</div>
+                )}
+                {!cargando && !errorCarga && visitasCola.map((visita) => {
+                  const minutos = minutosEspera(visita)
+                  const esperaLarga = visita.status === 'PRESENT' && (minutos ?? 0) > 30
+
+                  return (
+                    <article className="medico-patient" key={visita.id}>
+                      <div className="medico-time">{horaLocal(visita.arrivalAt)}</div>
+                      <div>
+                        <div className="medico-code">
+                          {visita.participant.code} · {visita.participant.studyCode} · {visita.visitCode}
+                        </div>
+                        <div className="medico-detail">Turno: {visita.scheduledTime.slice(0, 5)}</div>
+                        <div className="medico-detail">Llegó: {horaLocal(visita.arrivalAt)}</div>
+                      </div>
+                      <div>
+                        <div>{visita.assignedDoctor}</div>
+                        <div className="medico-detail">{visita.room ?? 'Consultorio sin asignar'}</div>
+                      </div>
+                      <div>
+                        <span className="medico-badge">{estadoVisita(visita)}</span>
+                        {minutos !== null && <div className="medico-detail">Espera {minutos} min</div>}
+                        {esperaLarga && <div className="medico-wait-alert">Espera prolongada</div>}
+                      </div>
+                      <div className="medico-action-cell">
+                        <button className="medico-button" onClick={() => abrirEvaluacion(visita)}>
+                          Abrir evaluación
+                        </button>
+                      </div>
+                    </article>
+                  )
+                })}
               </section>
             </>
           ) : (
@@ -544,7 +639,7 @@ export default function Medico({ onVolver }: MedicoProps) {
               <div className="medico-title-row">
                 <div>
                   <h2>
-                    {pacienteActivo.codigo} · {pacienteActivo.estudio} · {pacienteActivo.visita}
+                    {visitaActiva.participant.code} · {visitaActiva.participant.studyCode} · {visitaActiva.visitCode}
                   </h2>
                   <div className="medico-muted">Evaluación clínica de la visita</div>
                 </div>
@@ -555,26 +650,30 @@ export default function Medico({ onVolver }: MedicoProps) {
 
               <section className="medico-summary" aria-label="Resumen del paciente">
                 <div className="medico-summary-item">
-                  <span className="medico-label">Hora de llegada</span>
-                  <strong>{pacienteActivo.horaLlegada}</strong>
+                  <span className="medico-label">Hora programada</span>
+                  <strong>{visitaActiva.scheduledTime.slice(0, 5)}</strong>
                 </div>
                 <div className="medico-summary-item">
-                  <span className="medico-label">Visita</span>
-                  <strong>{pacienteActivo.visita}</strong>
+                  <span className="medico-label">Hora de llegada</span>
+                  <strong>{horaLocal(visitaActiva.arrivalAt)}</strong>
                 </div>
                 <div className="medico-summary-item">
                   <span className="medico-label">Médico</span>
-                  <strong>{pacienteActivo.medico}</strong>
+                  <strong>{visitaActiva.assignedDoctor}</strong>
                 </div>
                 <div className="medico-summary-item">
                   <span className="medico-label">Consultorio</span>
-                  <strong>{pacienteActivo.consultorio}</strong>
+                  <strong>{visitaActiva.room ?? 'Consultorio sin asignar'}</strong>
                 </div>
                 <div className="medico-summary-item">
                   <span className="medico-label">Estado</span>
-                  <strong>{pacienteActivo.estado}</strong>
+                  <strong>{visitaActiva.status === 'PRESENT' ? 'Esperando médico' : 'En evaluación'}</strong>
                 </div>
               </section>
+
+              <div className="medico-demo-note">
+                Los datos clínicos de esta sección son de demostración. Se conectarán al registro persistente en las próximas etapas.
+              </div>
 
               <section className="medico-panel">
                 <h2>Resumen longitudinal</h2>
@@ -635,11 +734,6 @@ export default function Medico({ onVolver }: MedicoProps) {
 
               <section className="medico-panel">
                 <h2>Eventos adversos</h2>
-                {advertenciaEA && (
-                  <div className="medico-warning" role="alert">
-                    Debe actualizarse el estado del EA antes de finalizar la evaluación médica.
-                  </div>
-                )}
                 <div className="medico-form-grid">
                   <div className="medico-field">
                     <label htmlFor="estado-ea">Estado de eventos adversos</label>
@@ -686,21 +780,18 @@ export default function Medico({ onVolver }: MedicoProps) {
                       {['Sí', 'No'].map((opcion) => <label key={`continuar-${opcion}`}><input type="radio" name="continuar" />{opcion}</label>)}
                     </div>
                   </div>
-                  {pacienteActivo.aleatorizado ? (
-                    <div className="medico-field">
-                      <span className="medico-field-label">Autoriza IWRS</span>
-                      <div className="medico-options">
-                        {['Sí', 'No'].map((opcion) => <label key={`iwrs-${opcion}`}><input type="radio" name="iwrs" />{opcion}</label>)}
-                      </div>
+                  <div className="medico-field">
+                    <span className="medico-field-label">Elegible para randomización</span>
+                    <div className="medico-options">
+                      {['Sí', 'No'].map((opcion) => <label key={`randomizacion-${opcion}`}><input type="radio" name="randomizacion" />{opcion}</label>)}
                     </div>
-                  ) : (
-                    <div className="medico-field">
-                      <span className="medico-field-label">Elegible para randomización</span>
-                      <div className="medico-options">
-                        {['Sí', 'No'].map((opcion) => <label key={`randomizacion-${opcion}`}><input type="radio" name="randomizacion" />{opcion}</label>)}
-                      </div>
+                  </div>
+                  <div className="medico-field">
+                    <span className="medico-field-label">Autoriza IWRS</span>
+                    <div className="medico-options">
+                      {['Sí', 'No'].map((opcion) => <label key={`iwrs-${opcion}`}><input type="radio" name="iwrs" />{opcion}</label>)}
                     </div>
-                  )}
+                  </div>
                   <div className="medico-field full">
                     <span className="medico-field-label">Decisión de dosis</span>
                     <div className="medico-options">
@@ -713,7 +804,9 @@ export default function Medico({ onVolver }: MedicoProps) {
                 </div>
                 <div className="medico-actions">
                   <button className="medico-button secondary" onClick={volverACola}>Volver a mi cola</button>
-                  <button className="medico-button" disabled={advertenciaEA}>Finalizar evaluación médica</button>
+                  <button className="medico-button" disabled title="Persistencia clínica próximamente">
+                    Persistencia clínica próximamente
+                  </button>
                 </div>
               </section>
             </>
