@@ -1,117 +1,150 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { API_BASE_URL } from '../config/api'
 
-type Paciente = {
-  id: number
-  codigo: string
-  estudio: string
-  visita: string
-  medico: string
-  consultorio: string
-  horaTurno: string
-  horaLlegada?: string
-  enAtencion?: boolean
-  noAsistio?: boolean
+type Participant = {
+  id: string
+  code: string
+  studyCode: string
+}
+
+type VisitStatus =
+  | 'SCHEDULED'
+  | 'PRESENT'
+  | 'IN_PROGRESS'
+  | 'NO_SHOW'
+  | 'COMPLETED'
+
+type Visit = {
+  id: string
+  participant: Participant
+  visitCode: string
+  scheduledDate: string
+  scheduledTime: string
+  assignedDoctor: string
+  room: string | null
+  status: VisitStatus
+  arrivalAt: string | null
+  startedAt: string | null
+  completedAt: string | null
 }
 
 type RecepcionProps = {
   onVolver: () => void
 }
 
-function horaRelativa(minutos: number) {
-  const fecha = new Date()
-  fecha.setMinutes(fecha.getMinutes() + minutos)
+function fechaLocalActual() {
+  const ahora = new Date()
+  const año = ahora.getFullYear()
+  const mes = String(ahora.getMonth() + 1).padStart(2, '0')
+  const dia = String(ahora.getDate()).padStart(2, '0')
+  return `${año}-${mes}-${dia}`
+}
 
-  return fecha.toLocaleTimeString('es-AR', {
+function minutosDesdeTurno(visita: Visit, ahora: number) {
+  const [año, mes, dia] = visita.scheduledDate.split('-').map(Number)
+  const [hora, minuto] = visita.scheduledTime.split(':').map(Number)
+  const turno = new Date(año, mes - 1, dia, hora, minuto)
+  return Math.floor((ahora - turno.getTime()) / 60000)
+}
+
+function minutosDesdeLlegada(arrivalAt: string, ahora: number) {
+  return Math.max(0, Math.floor((ahora - new Date(arrivalAt).getTime()) / 60000))
+}
+
+function horaLocal(timestamp: string) {
+  return new Date(timestamp).toLocaleTimeString('es-AR', {
     hour: '2-digit',
     minute: '2-digit',
     hour12: false,
   })
 }
 
-function minutosDesde(hora: string) {
-  const ahora = new Date()
-  const [h, m] = hora.split(':').map(Number)
-
-  const momento = new Date()
-  momento.setHours(h, m, 0, 0)
-
-  return Math.floor((ahora.getTime() - momento.getTime()) / 60000)
-}
-
 export default function Recepcion({ onVolver }: RecepcionProps) {
-  const [pacientes, setPacientes] = useState<Paciente[]>([
-    {
-      id: 1,
-      codigo: 'ARG005-001',
-      estudio: 'GZVA',
-      visita: 'V3',
-      medico: 'Dr. Puleio',
-      consultorio: 'Consultorio 2',
-      horaTurno: horaRelativa(-10),
-    },
-    {
-      id: 2,
-      codigo: 'ARG005-008',
-      estudio: 'GZVA',
-      visita: 'V5',
-      medico: 'Dr. Pérez',
-      consultorio: 'Consultorio 1',
-      horaTurno: horaRelativa(-50),
-      horaLlegada: horaRelativa(-36),
-    },
-    {
-      id: 3,
-      codigo: 'ARG005-014',
-      estudio: 'GZVA',
-      visita: 'V3',
-      medico: 'Dr. Puleio',
-      consultorio: 'Consultorio 3',
-      horaTurno: horaRelativa(-40),
-    },
-    {
-      id: 4,
-      codigo: 'ARG005-006',
-      estudio: 'GZVA',
-      visita: 'V7',
-      medico: 'Dr. Gómez',
-      consultorio: 'Consultorio 1',
-      horaTurno: horaRelativa(35),
-    },
-  ])
+  const [visitas, setVisitas] = useState<Visit[]>([])
+  const [cargando, setCargando] = useState(true)
+  const [errorCarga, setErrorCarga] = useState(false)
+  const [reintento, setReintento] = useState(0)
+  const [visitaRegistrando, setVisitaRegistrando] = useState<string | null>(null)
+  const [errorLlegada, setErrorLlegada] = useState<string | null>(null)
+  const [ahora, setAhora] = useState(() => Date.now())
 
-  function registrarLlegada(id: number) {
-    const ahora = new Date().toLocaleTimeString('es-AR', {
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false,
-    })
+  useEffect(() => {
+    const controller = new AbortController()
 
-    setPacientes((actuales) =>
-      actuales.map((paciente) =>
-        paciente.id === id
-          ? { ...paciente, horaLlegada: ahora }
-          : paciente
+    async function cargarAgenda() {
+      setCargando(true)
+      setErrorCarga(false)
+
+      try {
+        if (!API_BASE_URL) throw new Error('API URL no configurada')
+
+        const respuesta = await fetch(
+          `${API_BASE_URL}/visits?date=${fechaLocalActual()}`,
+          { signal: controller.signal },
+        )
+        if (!respuesta.ok) throw new Error('No se pudo cargar la agenda')
+
+        const datos = (await respuesta.json()) as Visit[]
+        setVisitas(datos)
+      } catch {
+        if (!controller.signal.aborted) setErrorCarga(true)
+      } finally {
+        if (!controller.signal.aborted) setCargando(false)
+      }
+    }
+
+    void cargarAgenda()
+    return () => controller.abort()
+  }, [reintento])
+
+  useEffect(() => {
+    const intervalId = window.setInterval(() => setAhora(Date.now()), 60_000)
+    return () => window.clearInterval(intervalId)
+  }, [])
+
+  async function registrarLlegada(id: string) {
+    setVisitaRegistrando(id)
+    setErrorLlegada(null)
+
+    try {
+      if (!API_BASE_URL) throw new Error('API URL no configurada')
+
+      const respuesta = await fetch(`${API_BASE_URL}/visits/${id}/arrival`, {
+        method: 'PATCH',
+      })
+      if (!respuesta.ok) throw new Error('No se pudo registrar la llegada')
+
+      const visitaActualizada = (await respuesta.json()) as Visit
+      setVisitas((actuales) =>
+        actuales.map((visita) =>
+          visita.id === visitaActualizada.id ? visitaActualizada : visita,
+        ),
       )
-    )
+      setAhora(Date.now())
+    } catch {
+      setErrorLlegada(id)
+    } finally {
+      setVisitaRegistrando(null)
+    }
   }
 
-  function estadoPaciente(paciente: Paciente) {
-    if (paciente.noAsistio) {
+  function estadoVisita(visita: Visit) {
+    if (visita.status === 'NO_SHOW') {
       return {
         texto: 'No asistió',
         clase: 'estado no-asistio',
       }
     }
 
-    if (paciente.enAtencion) {
+    if (visita.status === 'IN_PROGRESS') {
       return {
         texto: 'En atención',
         clase: 'estado atencion',
       }
     }
 
-    if (paciente.horaLlegada) {
-      const espera = minutosDesde(paciente.horaLlegada)
+    if (visita.status === 'PRESENT' && visita.arrivalAt) {
+      const espera = minutosDesdeLlegada(visita.arrivalAt, ahora)
 
       if (espera > 30) {
         return {
@@ -126,12 +159,14 @@ export default function Recepcion({ onVolver }: RecepcionProps) {
       }
     }
 
-    const demora = minutosDesde(paciente.horaTurno)
+    if (visita.status === 'SCHEDULED') {
+      const demora = minutosDesdeTurno(visita, ahora)
 
-    if (demora > 30) {
-      return {
-        texto: `Demorado · ${demora} min`,
-        clase: 'estado demorado',
+      if (demora > 30) {
+        return {
+          texto: `Demorado · ${demora} min`,
+          clase: 'estado demorado',
+        }
       }
     }
 
@@ -141,21 +176,18 @@ export default function Recepcion({ onVolver }: RecepcionProps) {
     }
   }
 
-  const presentes = pacientes.filter(
-    (paciente) => paciente.horaLlegada && !paciente.enAtencion
+  const pacientesActivos = visitas.filter((visita) => visita.status !== 'COMPLETED')
+  const presentes = pacientesActivos.filter((visita) => visita.status === 'PRESENT').length
+
+  const demorados = pacientesActivos.filter(
+    (visita) => visita.status === 'SCHEDULED' && minutosDesdeTurno(visita, ahora) > 30,
   ).length
 
-  const demorados = pacientes.filter(
-    (paciente) =>
-      !paciente.horaLlegada &&
-      minutosDesde(paciente.horaTurno) > 30
-  ).length
-
-  const esperaLarga = pacientes.filter(
-    (paciente) =>
-      paciente.horaLlegada &&
-      !paciente.enAtencion &&
-      minutosDesde(paciente.horaLlegada) > 30
+  const esperaLarga = pacientesActivos.filter(
+    (visita) =>
+      visita.status === 'PRESENT' &&
+      visita.arrivalAt !== null &&
+      minutosDesdeLlegada(visita.arrivalAt, ahora) > 30,
   ).length
 
   return (
@@ -334,6 +366,36 @@ export default function Recepcion({ onVolver }: RecepcionProps) {
           background: #0874b7;
         }
 
+        .boton-llegada:disabled {
+          cursor: wait;
+          opacity: .7;
+        }
+
+        .mensaje-error {
+          margin: 12px 0;
+          padding: 12px 14px;
+          border: 1px solid #efc2b8;
+          border-radius: 8px;
+          background: #fff0ed;
+          color: #843728;
+          font-size: 14px;
+        }
+
+        .boton-reintentar {
+          margin-top: 10px;
+          padding: 8px 12px;
+          border: 1px solid #b9d7e8;
+          border-radius: 7px;
+          background: white;
+          color: #17658e;
+          cursor: pointer;
+          font-weight: 600;
+        }
+
+        .boton-reintentar:hover {
+          background: #eff8fc;
+        }
+
         .llegada {
           font-size: 13px;
           color: #526173;
@@ -351,11 +413,6 @@ export default function Recepcion({ onVolver }: RecepcionProps) {
 
         .consultorio-titulo {
           font-weight: 700;
-        }
-
-        .libre {
-          color: #278453;
-          margin-top: 6px;
         }
 
         @media (max-width: 1000px) {
@@ -423,7 +480,7 @@ export default function Recepcion({ onVolver }: RecepcionProps) {
           <div className="indicadores">
             <div className="indicador">
               <div className="indicador-numero">
-                {pacientes.length}
+                {pacientesActivos.length}
               </div>
               <div className="indicador-label">
                 Pacientes hoy
@@ -462,8 +519,27 @@ export default function Recepcion({ onVolver }: RecepcionProps) {
             <section className="panel">
               <h2>Agenda de hoy</h2>
 
-              {pacientes.map((paciente) => {
-                const estado = estadoPaciente(paciente)
+              {cargando && <p aria-live="polite">Cargando agenda...</p>}
+
+              {!cargando && errorCarga && (
+                <div className="mensaje-error" role="alert">
+                  No se pudo conectar con el servidor local
+                  <br />
+                  <button
+                    className="boton-reintentar"
+                    onClick={() => setReintento((intento) => intento + 1)}
+                  >
+                    Reintentar
+                  </button>
+                </div>
+              )}
+
+              {!cargando && !errorCarga && pacientesActivos.length === 0 && (
+                <p>No hay visitas programadas para hoy.</p>
+              )}
+
+              {!cargando && !errorCarga && pacientesActivos.map((paciente) => {
+                const estado = estadoVisita(paciente)
 
                 return (
                   <div
@@ -471,26 +547,26 @@ export default function Recepcion({ onVolver }: RecepcionProps) {
                     key={paciente.id}
                   >
                     <div className="hora">
-                      {paciente.horaTurno}
+                      {paciente.scheduledTime.slice(0, 5)}
                     </div>
 
                     <div>
                       <div className="codigo">
-                        {paciente.codigo}
+                        {paciente.participant.code}
                       </div>
 
                       <div className="detalle">
-                        {paciente.estudio} · {paciente.visita}
+                        {paciente.participant.studyCode} · {paciente.visitCode}
                       </div>
                     </div>
 
                     <div>
                       <div>
-                        {paciente.medico}
+                        {paciente.assignedDoctor}
                       </div>
 
                       <div className="detalle">
-                        {paciente.consultorio}
+                        {paciente.room ?? 'Consultorio sin asignar'}
                       </div>
                     </div>
 
@@ -499,25 +575,28 @@ export default function Recepcion({ onVolver }: RecepcionProps) {
                         {estado.texto}
                       </span>
 
-                      {paciente.horaLlegada && (
+                      {paciente.arrivalAt && (
                         <div className="llegada">
-                          Llegó: {paciente.horaLlegada}
+                          Llegó: {horaLocal(paciente.arrivalAt)}
                         </div>
                       )}
                     </div>
 
                     <div>
-                      {!paciente.horaLlegada &&
-                        !paciente.noAsistio && (
+                      {paciente.status === 'SCHEDULED' && (
                           <button
                             className="boton-llegada"
-                            onClick={() =>
-                              registrarLlegada(paciente.id)
-                            }
+                            disabled={visitaRegistrando === paciente.id}
+                            onClick={() => void registrarLlegada(paciente.id)}
                           >
-                            Paciente llegó
+                            {visitaRegistrando === paciente.id ? 'Registrando...' : 'Paciente llegó'}
                           </button>
                         )}
+                      {errorLlegada === paciente.id && (
+                        <div className="mensaje-error" role="alert">
+                          No se pudo registrar la llegada
+                        </div>
+                      )}
                     </div>
                   </div>
                 )
@@ -525,7 +604,7 @@ export default function Recepcion({ onVolver }: RecepcionProps) {
             </section>
 
             <aside className="panel">
-              <h2>Consultorios</h2>
+              <h2>Asignación del día</h2>
 
               <div className="consultorio">
                 <div className="consultorio-titulo">
@@ -533,9 +612,6 @@ export default function Recepcion({ onVolver }: RecepcionProps) {
                 </div>
                 <div className="detalle">
                   Dr. Pérez
-                </div>
-                <div className="libre">
-                  ● Libre
                 </div>
               </div>
 
@@ -546,9 +622,6 @@ export default function Recepcion({ onVolver }: RecepcionProps) {
                 <div className="detalle">
                   Dr. Puleio
                 </div>
-                <div className="libre">
-                  ● Libre
-                </div>
               </div>
 
               <div className="consultorio">
@@ -557,9 +630,6 @@ export default function Recepcion({ onVolver }: RecepcionProps) {
                 </div>
                 <div className="detalle">
                   Dr. Gómez
-                </div>
-                <div className="libre">
-                  ● Libre
                 </div>
               </div>
             </aside>
