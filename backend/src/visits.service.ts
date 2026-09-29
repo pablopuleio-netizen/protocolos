@@ -7,6 +7,7 @@ import {
 import { InjectRepository } from '@nestjs/typeorm'
 import { FindOptionsWhere, Repository } from 'typeorm'
 import { Visit, VisitStatus } from './visit.entity'
+import { VisitProceduresService } from './visit-procedures.service'
 
 type VisitFilters = {
   date?: string
@@ -25,6 +26,7 @@ export class VisitsService {
   constructor(
     @InjectRepository(Visit)
     private readonly visits: Repository<Visit>,
+    private readonly visitProcedures: VisitProceduresService,
   ) {}
 
   findAll(filters: VisitFilters) {
@@ -79,6 +81,8 @@ export class VisitsService {
 
     visit.arrivalAt = new Date()
     visit.status = VisitStatus.PRESENT
-    return this.visits.save(visit)
+    const savedVisit = await this.visits.save(visit)
+    await this.visitProcedures.refreshProcedureReadiness(savedVisit.id)
+    return savedVisit
   }
 }

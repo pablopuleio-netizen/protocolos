@@ -7,6 +7,8 @@ import { Participant } from './participant.entity'
 import { ParticipantsModule } from './participants.module'
 import { SystemCheck } from './system-check.entity'
 import { Visit } from './visit.entity'
+import { VisitProcedure } from './visit-procedure.entity'
+import { VisitProceduresModule } from './visit-procedures.module'
 import { VisitsModule } from './visits.module'
 
 @Module({
@@ -24,11 +26,12 @@ import { VisitsModule } from './visits.module'
         database: config.get<string>('DATABASE_NAME', 'cemedic'),
         username: config.get<string>('DATABASE_USER', 'cemedic'),
         password: config.get<string>('DATABASE_PASSWORD', 'cemedic_dev'),
-        entities: [SystemCheck, Participant, Visit],
+        entities: [SystemCheck, Participant, Visit, VisitProcedure],
         synchronize: config.get<string>('NODE_ENV') !== 'production',
       }),
     }),
     ParticipantsModule,
+    VisitProceduresModule,
     VisitsModule,
   ],
   controllers: [AppController],
