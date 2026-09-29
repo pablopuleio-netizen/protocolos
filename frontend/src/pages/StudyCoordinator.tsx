@@ -105,59 +105,250 @@ export default function StudyCoordinator({
     },
   ]
 
-  const procedimientosDemo: Procedimiento[] = [
-    {
-      nombre: 'Confirmación de ayuno',
-      responsable: 'Médico',
-      estado: 'realizado',
-      hora: '08:12',
-    },
-    {
-      nombre: 'Signos vitales',
-      responsable: 'Médico',
-      estado: 'realizado',
-      hora: '08:18',
-    },
-    {
-      nombre: 'Peso',
-      responsable: 'Médico',
-      estado: 'realizado',
-      hora: '08:21',
-    },
-    {
-      nombre: 'Cuestionarios',
-      responsable: 'Médico',
-      estado: 'habilitado',
-    },
-    {
-      nombre: 'ECG',
-      responsable: 'ECG',
-      estado: 'habilitado',
-    },
-    {
-      nombre: 'Evaluación médica',
-      responsable: 'Médico',
-      estado: 'habilitado',
-    },
-    {
-      nombre: 'Laboratorio',
-      responsable: 'Laboratorio',
-      estado: 'bloqueado',
-      motivo: 'Esperando secuencia previa del protocolo',
-    },
-    {
-      nombre: 'IWRS',
-      responsable: 'Study Coordinator',
-      estado: 'bloqueado',
-      motivo: 'Requiere autorización médica',
-    },
-    {
-      nombre: 'Dispensa de IP',
-      responsable: 'Study Coordinator',
-      estado: 'bloqueado',
-      motivo: 'IWRS pendiente',
-    },
-  ]
+  const procedimientosPorVisita: Record<string, Procedimiento[]> = {
+    V3: [
+      {
+        nombre: 'Confirmación de ayuno',
+        responsable: 'Médico',
+        estado: 'realizado',
+        hora: '08:12',
+      },
+      {
+        nombre: 'Elegibilidad final I/E',
+        responsable: 'Médico',
+        estado: 'realizado',
+        hora: '08:15',
+      },
+      {
+        nombre: 'Medicación concomitante y eventos adversos',
+        responsable: 'Médico',
+        estado: 'realizado',
+        hora: '08:20',
+      },
+      {
+        nombre: 'Peso, cintura y signos vitales',
+        responsable: 'Médico',
+        estado: 'habilitado',
+      },
+      {
+        nombre: 'Evaluación física dirigida',
+        responsable: 'Médico',
+        estado: 'habilitado',
+      },
+      {
+        nombre: 'ECG',
+        responsable: 'ECG',
+        estado: 'bloqueado',
+        motivo: 'Realizar después de signos vitales',
+      },
+      {
+        nombre: 'PRO basales',
+        responsable: 'Médico / eCOA',
+        estado: 'habilitado',
+      },
+      {
+        nombre: 'PHQ-9',
+        responsable: 'Médico / eCOA',
+        estado: 'habilitado',
+      },
+      {
+        nombre: 'C-SSRS',
+        responsable: 'Médico / eCOA',
+        estado: 'bloqueado',
+        motivo: 'AEs deben estar revisados y PHQ-9 debe preceder a C-SSRS',
+      },
+      {
+        nombre: 'DXA basal / MRI-AMRA / BIA según corresponda',
+        responsable: 'Study Coordinator',
+        estado: 'habilitado',
+      },
+      {
+        nombre: 'Laboratorio y muestras basales',
+        responsable: 'Laboratorio',
+        estado: 'bloqueado',
+        motivo: 'Realizar después de signos vitales',
+      },
+      {
+        nombre: 'Asesoramiento de estilo de vida',
+        responsable: 'Médico',
+        estado: 'habilitado',
+      },
+      {
+        nombre: 'IWRS y randomización',
+        responsable: 'Study Coordinator',
+        estado: 'bloqueado',
+        motivo: 'Requiere elegibilidad final y procedimientos basales completos',
+      },
+      {
+        nombre: 'Dispensa de IP',
+        responsable: 'Study Coordinator',
+        estado: 'bloqueado',
+        motivo: 'Randomización/IWRS pendiente',
+      },
+      {
+        nombre: 'Primera dosis',
+        responsable: 'Médico / Study Coordinator',
+        estado: 'bloqueado',
+        motivo: 'Debe administrarse al final de la visita',
+      },
+    ],
+
+    V5: [
+      {
+        nombre: 'Confirmación de ayuno',
+        responsable: 'Médico',
+        estado: 'realizado',
+        hora: '09:38',
+      },
+      {
+        nombre: 'Medicación concomitante y eventos adversos',
+        responsable: 'Médico',
+        estado: 'realizado',
+        hora: '09:42',
+      },
+      {
+        nombre: 'Peso, cintura y signos vitales',
+        responsable: 'Médico',
+        estado: 'habilitado',
+      },
+      {
+        nombre: 'Evaluación dirigida a síntomas',
+        responsable: 'Médico',
+        estado: 'habilitado',
+      },
+      {
+        nombre: 'EBAQ-17 y FNQ',
+        responsable: 'Médico / eCOA',
+        estado: 'habilitado',
+      },
+      {
+        nombre: 'PHQ-9',
+        responsable: 'Médico / eCOA',
+        estado: 'habilitado',
+      },
+      {
+        nombre: 'C-SSRS',
+        responsable: 'Médico / eCOA',
+        estado: 'bloqueado',
+        motivo: 'AEs deben estar revisados y PHQ-9 debe preceder a C-SSRS',
+      },
+      {
+        nombre: 'Laboratorio según SoA',
+        responsable: 'Laboratorio',
+        estado: 'bloqueado',
+        motivo: 'Realizar después de signos vitales',
+      },
+      {
+        nombre: 'Asesoramiento de estilo de vida',
+        responsable: 'Médico',
+        estado: 'habilitado',
+      },
+      {
+        nombre: 'Devolución de IP y accountability',
+        responsable: 'Study Coordinator',
+        estado: 'habilitado',
+      },
+      {
+        nombre: 'Evaluación de adherencia',
+        responsable: 'Study Coordinator',
+        estado: 'habilitado',
+      },
+      {
+        nombre: 'Tolerabilidad y decisión de dosis',
+        responsable: 'Médico',
+        estado: 'bloqueado',
+        motivo: 'Requiere evaluación clínica de la visita',
+      },
+      {
+        nombre: 'IWRS',
+        responsable: 'Study Coordinator',
+        estado: 'bloqueado',
+        motivo: 'Requiere decisión médica de continuidad/dosis',
+      },
+      {
+        nombre: 'Dispensa de IP',
+        responsable: 'Study Coordinator',
+        estado: 'bloqueado',
+        motivo: 'IWRS pendiente',
+      },
+    ],
+
+    V7: [
+      {
+        nombre: 'Confirmación de ayuno',
+        responsable: 'Médico',
+        estado: 'habilitado',
+      },
+      {
+        nombre: 'Medicación concomitante y eventos adversos',
+        responsable: 'Médico',
+        estado: 'habilitado',
+      },
+      {
+        nombre: 'Peso, cintura y signos vitales',
+        responsable: 'Médico',
+        estado: 'bloqueado',
+        motivo: 'Paciente debe estar presente y comenzar evaluación',
+      },
+      {
+        nombre: 'Evaluación dirigida',
+        responsable: 'Médico',
+        estado: 'bloqueado',
+        motivo: 'Pendiente inicio de evaluación clínica',
+      },
+      {
+        nombre: 'EBAQ-17 y FNQ',
+        responsable: 'Médico / eCOA',
+        estado: 'bloqueado',
+        motivo: 'Pendiente inicio de visita',
+      },
+      {
+        nombre: 'PHQ-9',
+        responsable: 'Médico / eCOA',
+        estado: 'bloqueado',
+        motivo: 'Pendiente inicio de visita',
+      },
+      {
+        nombre: 'C-SSRS',
+        responsable: 'Médico / eCOA',
+        estado: 'bloqueado',
+        motivo: 'AEs deben estar revisados y PHQ-9 debe preceder a C-SSRS',
+      },
+      {
+        nombre: 'Asesoramiento de estilo de vida',
+        responsable: 'Médico',
+        estado: 'bloqueado',
+        motivo: 'Pendiente evaluación clínica',
+      },
+      {
+        nombre: 'Devolución de IP y accountability',
+        responsable: 'Study Coordinator',
+        estado: 'bloqueado',
+        motivo: 'Pendiente recepción del paciente',
+      },
+      {
+        nombre: 'Evaluación de adherencia',
+        responsable: 'Study Coordinator',
+        estado: 'bloqueado',
+        motivo: 'Pendiente devolución/accountability',
+      },
+      {
+        nombre: 'Tolerabilidad y decisión de dosis',
+        responsable: 'Médico',
+        estado: 'bloqueado',
+        motivo: 'Requiere evaluación clínica',
+      },
+      {
+        nombre: 'IWRS y dispensa',
+        responsable: 'Study Coordinator',
+        estado: 'bloqueado',
+        motivo: 'Requiere autorización médica',
+      },
+    ],
+  }
+
+  const procedimientosActuales =
+    procedimientosPorVisita[visitaAbierta?.visita ?? ''] ?? []
 
   function textoEstado(estado: Visita['estado']) {
     if (estado === 'presente') return 'Presente'
@@ -428,9 +619,9 @@ export default function StudyCoordinator({
 
             <div className="detalle-layout">
               <section className="detalle-panel">
-                <h2>Procedimientos de la visita</h2>
+                <h2>Procedimientos GZVA · {visitaAbierta.visita}</h2>
 
-                {procedimientosDemo.map((procedimiento) => (
+                {procedimientosActuales.map((procedimiento) => (
                   <div
                     className="procedimiento"
                     key={procedimiento.nombre}
