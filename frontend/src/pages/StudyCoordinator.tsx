@@ -1,3 +1,5 @@
+import { useState } from 'react'
+
 type Visita = {
   id: number
   codigo: string
@@ -18,9 +20,19 @@ type StudyCoordinatorProps = {
   onVolver: () => void
 }
 
+type Procedimiento = {
+  nombre: string
+  responsable: string
+  estado: 'realizado' | 'habilitado' | 'bloqueado'
+  motivo?: string
+  hora?: string
+}
+
 export default function StudyCoordinator({
   onVolver,
 }: StudyCoordinatorProps) {
+  const [visitaAbierta, setVisitaAbierta] = useState<Visita | null>(null)
+
   const visitas: Visita[] = [
     {
       id: 1,
@@ -93,10 +105,412 @@ export default function StudyCoordinator({
     },
   ]
 
+  const procedimientosDemo: Procedimiento[] = [
+    {
+      nombre: 'Confirmación de ayuno',
+      responsable: 'Médico',
+      estado: 'realizado',
+      hora: '08:12',
+    },
+    {
+      nombre: 'Signos vitales',
+      responsable: 'Médico',
+      estado: 'realizado',
+      hora: '08:18',
+    },
+    {
+      nombre: 'Peso',
+      responsable: 'Médico',
+      estado: 'realizado',
+      hora: '08:21',
+    },
+    {
+      nombre: 'Cuestionarios',
+      responsable: 'Médico',
+      estado: 'habilitado',
+    },
+    {
+      nombre: 'ECG',
+      responsable: 'ECG',
+      estado: 'habilitado',
+    },
+    {
+      nombre: 'Evaluación médica',
+      responsable: 'Médico',
+      estado: 'habilitado',
+    },
+    {
+      nombre: 'Laboratorio',
+      responsable: 'Laboratorio',
+      estado: 'bloqueado',
+      motivo: 'Esperando secuencia previa del protocolo',
+    },
+    {
+      nombre: 'IWRS',
+      responsable: 'Study Coordinator',
+      estado: 'bloqueado',
+      motivo: 'Requiere autorización médica',
+    },
+    {
+      nombre: 'Dispensa de IP',
+      responsable: 'Study Coordinator',
+      estado: 'bloqueado',
+      motivo: 'IWRS pendiente',
+    },
+  ]
+
   function textoEstado(estado: Visita['estado']) {
     if (estado === 'presente') return 'Presente'
     if (estado === 'en_curso') return 'En curso'
     return 'Esperado'
+  }
+
+  function claseProcedimiento(estado: Procedimiento['estado']) {
+    if (estado === 'realizado') return 'proc-realizado'
+    if (estado === 'habilitado') return 'proc-habilitado'
+    return 'proc-bloqueado'
+  }
+
+  function textoProcedimiento(estado: Procedimiento['estado']) {
+    if (estado === 'realizado') return 'Realizado'
+    if (estado === 'habilitado') return 'Puede avanzar'
+    return 'Bloqueado'
+  }
+
+  if (visitaAbierta) {
+    return (
+      <>
+        <style>{`
+          .detalle-app {
+            min-height: 100vh;
+            background: #f4f7fb;
+            color: #14213d;
+          }
+
+          .detalle-header {
+            background: linear-gradient(90deg, #073763, #0a4f86);
+            color: white;
+            padding: 20px 32px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 20px;
+          }
+
+          .detalle-header h1 {
+            margin: 0;
+            font-size: 25px;
+          }
+
+          .detalle-header p {
+            margin: 4px 0 0;
+            opacity: .8;
+          }
+
+          .detalle-volver {
+            background: rgba(255,255,255,.15);
+            border: 1px solid rgba(255,255,255,.35);
+            color: white;
+            border-radius: 8px;
+            padding: 9px 14px;
+            cursor: pointer;
+            font-weight: 600;
+          }
+
+          .detalle-content {
+            max-width: 1380px;
+            margin: auto;
+            padding: 28px;
+          }
+
+          .detalle-resumen {
+            background: white;
+            border: 1px solid #e2e8f0;
+            border-radius: 16px;
+            padding: 22px;
+            display: grid;
+            grid-template-columns: repeat(5, 1fr);
+            gap: 18px;
+            margin-bottom: 22px;
+          }
+
+          .dato-label {
+            font-size: 12px;
+            color: #718096;
+            text-transform: uppercase;
+            letter-spacing: .4px;
+          }
+
+          .dato-valor {
+            margin-top: 5px;
+            font-size: 17px;
+            font-weight: 700;
+          }
+
+          .detalle-layout {
+            display: grid;
+            grid-template-columns: minmax(0, 2fr) 360px;
+            gap: 22px;
+          }
+
+          .detalle-panel {
+            background: white;
+            border: 1px solid #e2e8f0;
+            border-radius: 16px;
+            padding: 22px;
+          }
+
+          .detalle-panel h2 {
+            margin: 0 0 18px;
+            font-size: 21px;
+          }
+
+          .procedimiento {
+            display: grid;
+            grid-template-columns: minmax(0, 1.4fr) 160px 130px;
+            gap: 14px;
+            align-items: center;
+            padding: 15px 0;
+            border-bottom: 1px solid #edf0f4;
+          }
+
+          .procedimiento:last-child {
+            border-bottom: none;
+          }
+
+          .proc-nombre {
+            font-weight: 700;
+          }
+
+          .proc-responsable {
+            color: #6b7b8d;
+            font-size: 14px;
+            margin-top: 4px;
+          }
+
+          .proc-estado {
+            display: inline-block;
+            border-radius: 999px;
+            padding: 7px 10px;
+            font-size: 12px;
+            font-weight: 700;
+            text-align: center;
+          }
+
+          .proc-realizado {
+            background: #e5f5eb;
+            color: #237a49;
+          }
+
+          .proc-habilitado {
+            background: #dff3ff;
+            color: #16678f;
+          }
+
+          .proc-bloqueado {
+            background: #fff1df;
+            color: #9a5a08;
+          }
+
+          .proc-hora {
+            color: #627286;
+            font-size: 14px;
+          }
+
+          .motivo {
+            margin-top: 5px;
+            color: #9a5a08;
+            font-size: 12px;
+            font-weight: 500;
+          }
+
+          .side-block {
+            padding: 14px 0;
+            border-bottom: 1px solid #edf0f4;
+          }
+
+          .side-block:last-child {
+            border-bottom: none;
+          }
+
+          .side-title {
+            font-weight: 700;
+            margin-bottom: 6px;
+          }
+
+          .side-text {
+            color: #627286;
+            font-size: 14px;
+            line-height: 1.45;
+          }
+
+          .boton-secundario {
+            width: 100%;
+            margin-top: 12px;
+            border: 1px solid #d6dee8;
+            background: white;
+            border-radius: 8px;
+            padding: 10px 12px;
+            cursor: pointer;
+            font-weight: 600;
+            color: #32465a;
+          }
+
+          @media (max-width: 1000px) {
+            .detalle-resumen {
+              grid-template-columns: repeat(2, 1fr);
+            }
+
+            .detalle-layout {
+              grid-template-columns: 1fr;
+            }
+          }
+
+          @media (max-width: 650px) {
+            .detalle-content {
+              padding: 15px;
+            }
+
+            .procedimiento {
+              grid-template-columns: 1fr;
+            }
+          }
+        `}</style>
+
+        <div className="detalle-app">
+          <header className="detalle-header">
+            <div>
+              <h1>
+                {visitaAbierta.codigo} · {visitaAbierta.estudio} · {visitaAbierta.visita}
+              </h1>
+              <p>Control operativo de visita</p>
+            </div>
+
+            <button
+              className="detalle-volver"
+              onClick={() => setVisitaAbierta(null)}
+            >
+              ← Volver al flujo
+            </button>
+          </header>
+
+          <main className="detalle-content">
+            <section className="detalle-resumen">
+              <div>
+                <div className="dato-label">Hora</div>
+                <div className="dato-valor">{visitaAbierta.hora}</div>
+              </div>
+
+              <div>
+                <div className="dato-label">Médico</div>
+                <div className="dato-valor">{visitaAbierta.medico}</div>
+              </div>
+
+              <div>
+                <div className="dato-label">Consultorio</div>
+                <div className="dato-valor">{visitaAbierta.consultorio}</div>
+              </div>
+
+              <div>
+                <div className="dato-label">Estado</div>
+                <div className="dato-valor">
+                  {textoEstado(visitaAbierta.estado)}
+                </div>
+              </div>
+
+              <div>
+                <div className="dato-label">Progreso</div>
+                <div className="dato-valor">
+                  {visitaAbierta.realizados}/{visitaAbierta.total}
+                </div>
+              </div>
+            </section>
+
+            <div className="detalle-layout">
+              <section className="detalle-panel">
+                <h2>Procedimientos de la visita</h2>
+
+                {procedimientosDemo.map((procedimiento) => (
+                  <div
+                    className="procedimiento"
+                    key={procedimiento.nombre}
+                  >
+                    <div>
+                      <div className="proc-nombre">
+                        {procedimiento.nombre}
+                      </div>
+
+                      <div className="proc-responsable">
+                        Responsable: {procedimiento.responsable}
+                      </div>
+
+                      {procedimiento.motivo && (
+                        <div className="motivo">
+                          {procedimiento.motivo}
+                        </div>
+                      )}
+                    </div>
+
+                    <div>
+                      <span
+                        className={`proc-estado ${claseProcedimiento(
+                          procedimiento.estado
+                        )}`}
+                      >
+                        {textoProcedimiento(procedimiento.estado)}
+                      </span>
+                    </div>
+
+                    <div className="proc-hora">
+                      {procedimiento.hora
+                        ? `Hora: ${procedimiento.hora}`
+                        : 'Sin registrar'}
+                    </div>
+                  </div>
+                ))}
+              </section>
+
+              <aside className="detalle-panel">
+                <h2>Control SC</h2>
+
+                <div className="side-block">
+                  <div className="side-title">Pendientes activos</div>
+                  <div className="side-text">
+                    Evaluación médica, laboratorio, IWRS y dispensa de IP.
+                  </div>
+                </div>
+
+                <div className="side-block">
+                  <div className="side-title">Siguiente paso sugerido</div>
+                  <div className="side-text">
+                    Puede continuar con cuestionarios, ECG o evaluación médica.
+                  </div>
+                </div>
+
+                <div className="side-block">
+                  <div className="side-title">Advertencia de protocolo</div>
+                  <div className="side-text">
+                    IWRS permanece bloqueado hasta contar con autorización médica.
+                  </div>
+                </div>
+
+                <button className="boton-secundario">
+                  Reasignar médico
+                </button>
+
+                <button className="boton-secundario">
+                  Editar consultorio
+                </button>
+
+                <button className="boton-secundario">
+                  Registrar incidencia
+                </button>
+              </aside>
+            </div>
+          </main>
+        </div>
+      </>
+    )
   }
 
   return (
@@ -532,7 +946,10 @@ export default function StudyCoordinator({
                   </div>
 
                   <div className="botones">
-                    <button className="boton boton-principal">
+                    <button
+                      className="boton boton-principal"
+                      onClick={() => setVisitaAbierta(visita)}
+                    >
                       Abrir visita
                     </button>
 
